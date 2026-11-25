@@ -1,532 +1,771 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
-import { Play, Pause, Volume2, VolumeX, Timer, X } from 'lucide-react';
-
-// ─── SOUND DEFINITIONS ───
-interface SoundDef {
-  id: string;
-  name: string;
-  emoji: string;
-  color: string;
-  description: string;
-  type: 'url' | 'whitenoise' | 'binaural';
-  url?: string;
-}
-
-const SOUNDS: SoundDef[] = [
-  { id: 'rain', name: 'Rainfall', emoji: '🌧️', color: 'from-blue-50 to-slate-100', description: 'Gentle rain', type: 'url', url: 'https://www.soundjay.com/nature/rain-01.mp3' },
-  { id: 'ocean', name: 'Ocean Waves', emoji: '🌊', color: 'from-cyan-50 to-blue-100', description: 'Beach waves', type: 'url', url: 'https://www.soundjay.com/nature/ocean-wave-1.mp3' },
-  { id: 'forest', name: 'Forest Birds', emoji: '🌲', color: 'from-green-50 to-emerald-100', description: 'Birds chirping', type: 'url', url: 'https://www.soundjay.com/nature/birds-in-forest-1.mp3' },
-  { id: 'fire', name: 'Fireplace', emoji: '🔥', color: 'from-orange-50 to-red-100', description: 'Crackling fire', type: 'url', url: 'https://www.soundjay.com/nature/fire-burning-1.mp3' },
-  { id: 'bowl', name: 'Tibetan Bowl', emoji: '🧘', color: 'from-amber-50 to-yellow-100', description: 'Meditation bell', type: 'url', url: 'https://www.soundjay.com/human/sounds/bell-ringing-05.mp3' },
-  { id: 'whitenoise', name: 'White Noise', emoji: '🌬️', color: 'from-gray-50 to-slate-100', description: 'Pure white noise', type: 'whitenoise' },
-  { id: 'binaural', name: 'Focus Beats', emoji: '🎵', color: 'from-violet-50 to-purple-100', description: '10Hz alpha binaural', type: 'binaural' },
-];
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Timer,
+  X,
+  Sparkles,
+  Music,
+  Waves,
+  Moon,
+  Sliders,
+  Radio,
+  Disc3,
+} from 'lucide-react';
+import {
+  SOUND_CHANNELS,
+  SOUNDSCAPE_PRESETS,
+  SANCTUARY_MUSIC_TRACKS,
+  SanctuaryAudioEngine,
+  SoundChannelDef,
+  SanctuaryMusicTrack,
+} from '../utils/soundEngine';
+import SleepStories from './SleepStories';
 
 const TIMER_OPTIONS = [
-  { label: '5m', minutes: 5 },
-  { label: '15m', minutes: 15 },
-  { label: '25m', minutes: 25 },
-  { label: '45m', minutes: 45 },
-  { label: '∞', minutes: 0 },
+  { label: '10m', minutes: 10 },
+  { label: '20m', minutes: 20 },
+  { label: '30m', minutes: 30 },
+  { label: '60m', minutes: 60 },
+  { label: '∞ Continuous', minutes: 0 },
 ];
 
-// ─── AUDIO ENGINE ───
-interface ActiveSound {
-  id: string;
-  volume: number;
-  // For URL-based sounds
-  audio?: HTMLAudioElement;
-  // For Web Audio API sounds
-  ctx?: AudioContext;
-  gainNode?: GainNode;
-  sources?: (AudioBufferSourceNode | OscillatorNode)[];
-}
-
-function createUrlSound(url: string, volume: number): ActiveSound | null {
-  try {
-    const audio = new Audio(url);
-    audio.loop = true;
-    audio.volume = volume;
-    // Don't set crossOrigin — it breaks some servers that don't send CORS headers
-    // HTML5 Audio doesn't need CORS unless we're analyzing it with Web Audio API
-    const playPromise = audio.play();
-    if (playPromise) {
-      playPromise.catch(() => {
-        // If play fails (autoplay policy or network), it's handled by the onerror fallback
-      });
-    }
-    return { id: '', volume, audio };
-  } catch { return null; }
-}
-
-// Fallback: generate nature-like noise via Web Audio API when URLs fail
-function createFallbackNoise(type: string, volume: number): ActiveSound | null {
-  try {
-    const ctx = new AudioContext();
-    const bufferSize = ctx.sampleRate * 2;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-
-    // Different noise textures for different "sounds"
-    if (type === 'rain' || type === 'ocean') {
-      // Pink noise (rain/ocean-like)
-      let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
-      for (let i = 0; i < bufferSize; i++) {
-        const w = Math.random() * 2 - 1;
-        b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759;
-        b2=0.96900*b2+w*0.1538520; b3=0.86650*b3+w*0.3104856;
-        b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
-        data[i]=(b0+b1+b2+b3+b4+b5+b6+w*0.5362)*0.11;
-        b6=w*0.115926;
-      }
-    } else {
-      // Brown noise (fire/forest-like)
-      let last = 0;
-      for (let i = 0; i < bufferSize; i++) {
-        const w = Math.random() * 2 - 1;
-        last = (last + 0.02 * w) / 1.02;
-        data[i] = last * 3.5;
-      }
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    const gain = ctx.createGain();
-    gain.gain.value = volume * 0.3;
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    source.start();
-    return { id: '', volume, ctx, gainNode: gain, sources: [source] };
-  } catch { return null; }
-}
-
-function createWhiteNoise(volume: number): ActiveSound | null {
-  try {
-    const ctx = new AudioContext();
-    const bufferSize = ctx.sampleRate * 2;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    const gain = ctx.createGain();
-    gain.gain.value = volume * 0.3; // White noise is loud, scale down
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    source.start();
-    return { id: '', volume, ctx, gainNode: gain, sources: [source] };
-  } catch { return null; }
-}
-
-function createBinaural(volume: number): ActiveSound | null {
-  try {
-    const ctx = new AudioContext();
-    const gain = ctx.createGain();
-    gain.gain.value = volume * 0.15; // Binaural should be subtle
-
-    // Left ear: 200Hz
-    const oscL = ctx.createOscillator();
-    oscL.type = 'sine';
-    oscL.frequency.value = 200;
-    const panL = ctx.createStereoPanner();
-    panL.pan.value = -1;
-    oscL.connect(panL);
-    panL.connect(gain);
-
-    // Right ear: 210Hz (10Hz diff = alpha waves)
-    const oscR = ctx.createOscillator();
-    oscR.type = 'sine';
-    oscR.frequency.value = 210;
-    const panR = ctx.createStereoPanner();
-    panR.pan.value = 1;
-    oscR.connect(panR);
-    panR.connect(gain);
-
-    gain.connect(ctx.destination);
-    oscL.start();
-    oscR.start();
-
-    return { id: '', volume, ctx, gainNode: gain, sources: [oscL, oscR] };
-  } catch { return null; }
-}
-
-// ─── COMPONENT ───
 export default function AmbientSounds() {
-  const [activeSounds, setActiveSounds] = useState<Map<string, ActiveSound>>(new Map());
+  const engineRef = useRef<SanctuaryAudioEngine | null>(null);
+  if (!engineRef.current && typeof window !== 'undefined') {
+    engineRef.current = new SanctuaryAudioEngine();
+  }
+
+  const [activeTab, setActiveTab] = useState<'soundscapes' | 'music' | 'stories'>('soundscapes');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'water' | 'nature' | 'hearth' | 'brainwave'>('all');
+  const [activeChannels, setActiveChannels] = useState<Record<string, boolean>>({});
   const [volumes, setVolumes] = useState<Record<string, number>>(() => {
-    try { const s = localStorage.getItem('nm_sound_volumes'); return s ? JSON.parse(s) : {}; } catch { return {}; }
+    try {
+      const saved = localStorage.getItem('nm_sound_volumes');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
   });
+  const [masterVolume, setMasterVolume] = useState(0.85);
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+
+  // Music Studio State
+  const [activeTrack, setActiveTrack] = useState<SanctuaryMusicTrack | null>(null);
+  const [musicVolume, setMusicVolume] = useState(0.75);
+  const [musicCategory, setMusicCategory] = useState<'all' | 'piano' | 'lofi' | 'healing' | 'sleep' | 'devotional'>('all');
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
+
+  // Sleep Timer State
   const [showTimer, setShowTimer] = useState(false);
   const [timerMinutes, setTimerMinutes] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const mountedRef = useRef(true);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      // Stop all sounds on unmount
-      activeSounds.forEach(s => stopSingleSound(s));
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
+  // Real-time Canvas Acoustic Visualizer
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
-  // Save volumes when they change
+  const activeChannelCount = Object.keys(activeChannels).filter((k) => activeChannels[k]).length;
+  const isAnythingPlaying = activeChannelCount > 0 || activeTrack !== null;
+
   useEffect(() => {
     localStorage.setItem('nm_sound_volumes', JSON.stringify(volumes));
   }, [volumes]);
 
-  const stopSingleSound = useCallback((sound: ActiveSound) => {
-    if (sound.audio) {
-      sound.audio.pause();
-      sound.audio.src = '';
-    }
-    if (sound.sources) {
-      sound.sources.forEach(s => { try { s.stop(); } catch {} });
-    }
-    if (sound.ctx && sound.ctx.state !== 'closed') {
-      try { sound.ctx.close(); } catch {}
-    }
+  useEffect(() => {
+    return () => {
+      engineRef.current?.destroy();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
   }, []);
 
-  const toggleSound = useCallback((soundDef: SoundDef) => {
-    const existing = activeSounds.get(soundDef.id);
-    if (existing) {
-      // Stop this sound
-      stopSingleSound(existing);
-      const updated = new Map(activeSounds);
-      updated.delete(soundDef.id);
-      setActiveSounds(updated);
+  // Live Frequency Visualizer Loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const freqData = new Uint8Array(64);
+    let phase = 0;
+
+    const render = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const hasLiveAudio = engineRef.current?.getAnalyserData(freqData) && isAnythingPlaying;
+      const barCount = 36;
+      const gap = 4;
+      const barWidth = (w - gap * (barCount - 1)) / barCount;
+      phase += 0.045;
+
+      for (let i = 0; i < barCount; i++) {
+        let normalized = 0.12;
+        if (hasLiveAudio) {
+          const val = freqData[i % 32] / 255;
+          const wave = Math.sin(phase + i * 0.28) * 0.15 + 0.2;
+          normalized = Math.max(0.14, Math.min(0.95, val * 0.75 + wave));
+        } else if (isAnythingPlaying) {
+          normalized = 0.25 + Math.sin(phase + i * 0.35) * 0.18 + Math.cos(phase * 0.7 - i * 0.2) * 0.12;
+        } else {
+          normalized = 0.1 + Math.sin(phase * 0.4 + i * 0.25) * 0.04;
+        }
+
+        const barHeight = Math.max(4, normalized * (h - 8));
+        const x = i * (barWidth + gap);
+        const y = (h - barHeight) / 2;
+
+        const grad = ctx.createLinearGradient(0, y, 0, y + barHeight);
+        if (isAnythingPlaying) {
+          grad.addColorStop(0, '#34d399');
+          grad.addColorStop(0.5, '#10b981');
+          grad.addColorStop(1, '#6366f1');
+        } else {
+          grad.addColorStop(0, 'rgba(148, 163, 184, 0.25)');
+          grad.addColorStop(1, 'rgba(148, 163, 184, 0.15)');
+        }
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, barHeight, 3);
+        ctx.fill();
+      }
+
+      animFrameRef.current = requestAnimationFrame(render);
+    };
+
+    animFrameRef.current = requestAnimationFrame(render);
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [isAnythingPlaying]);
+
+  const stopEverything = useCallback(() => {
+    engineRef.current?.stopAllChannels();
+    engineRef.current?.stopMusicTrack();
+    setActiveChannels({});
+    setActiveTrack(null);
+    setActivePresetId(null);
+    setYoutubeVideoId(null);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setTimeLeft(0);
+  }, []);
+
+  const startSleepTimer = useCallback(
+    (mins: number) => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setTimerMinutes(mins);
+      if (mins <= 0) {
+        setTimeLeft(0);
+        return;
+      }
+      setTimeLeft(mins * 60);
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            setTimeout(() => stopEverything(), 0);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    },
+    [stopEverything]
+  );
+
+  const toggleChannel = (def: SoundChannelDef) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    if (activeChannels[def.id]) {
+      engine.stopChannel(def.id);
+      setActiveChannels((prev) => {
+        const next = { ...prev };
+        delete next[def.id];
+        return next;
+      });
+      setActivePresetId(null);
+    } else {
+      const vol = volumes[def.id] ?? 0.65;
+      engine.startChannel(def, vol);
+      setActiveChannels((prev) => ({ ...prev, [def.id]: true }));
+      if (timerMinutes > 0 && !timerRef.current) {
+        startSleepTimer(timerMinutes);
+      }
+    }
+  };
+
+  const handleChannelVolume = (id: string, val: number) => {
+    setVolumes((prev) => ({ ...prev, [id]: val }));
+    const def = SOUND_CHANNELS.find((c) => c.id === id);
+    if (!def || !engineRef.current) return;
+    if (activeChannels[id]) {
+      engineRef.current.startChannel(def, val);
+    }
+  };
+
+  const applyPreset = (presetId: string, mix: Record<string, number>) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    if (activePresetId === presetId) {
+      engine.stopAllChannels();
+      setActiveChannels({});
+      setActivePresetId(null);
       return;
     }
 
-    // Start this sound
-    const vol = volumes[soundDef.id] ?? 0.5;
-    let newSound: ActiveSound | null = null;
+    engine.stopAllChannels();
+    const nextActive: Record<string, boolean> = {};
+    const nextVolumes = { ...volumes };
 
-    if (soundDef.type === 'url' && soundDef.url) {
-      newSound = createUrlSound(soundDef.url, vol);
-      // Add error handler — if URL fails to load, fall back to generated noise
-      if (newSound?.audio) {
-        const audio = newSound.audio;
-        const fallbackId = soundDef.id;
-        audio.onerror = () => {
-          // URL failed — replace with generated noise
-          const fallback = createFallbackNoise(fallbackId, vol);
-          if (fallback) {
-            fallback.id = fallbackId;
-            setActiveSounds(prev => { const m = new Map(prev); m.set(fallbackId, fallback); return m; });
-          }
-        };
-      }
-    } else if (soundDef.type === 'whitenoise') {
-      newSound = createWhiteNoise(vol);
-    } else if (soundDef.type === 'binaural') {
-      newSound = createBinaural(vol);
+    for (const [chId, vol] of Object.entries(mix)) {
+      const def = SOUND_CHANNELS.find((c) => c.id === chId);
+      if (!def) continue;
+      nextVolumes[chId] = vol;
+      engine.startChannel(def, vol);
+      nextActive[chId] = true;
     }
 
-    if (newSound) {
-      newSound.id = soundDef.id;
-      const updated = new Map(activeSounds);
-      updated.set(soundDef.id, newSound);
-      setActiveSounds(updated);
+    setVolumes(nextVolumes);
+    setActiveChannels(nextActive);
+    setActivePresetId(presetId);
+    if (timerMinutes > 0 && !timerRef.current) {
+      startSleepTimer(timerMinutes);
+    }
+  };
 
-      // Start timer if set
+  const toggleMusicTrack = (track: SanctuaryMusicTrack) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    if (activeTrack?.id === track.id) {
+      engine.stopMusicTrack();
+      setActiveTrack(null);
+    } else {
+      engine.startMusicTrack(track, musicVolume);
+      setActiveTrack(track);
       if (timerMinutes > 0 && !timerRef.current) {
-        startTimer();
+        startSleepTimer(timerMinutes);
       }
     }
-  }, [activeSounds, volumes, timerMinutes]);
+  };
 
-  const changeVolume = useCallback((soundId: string, vol: number) => {
-    setVolumes(prev => ({ ...prev, [soundId]: vol }));
-    const sound = activeSounds.get(soundId);
-    if (sound) {
-      if (sound.audio) sound.audio.volume = vol;
-      if (sound.gainNode && sound.ctx) {
-        const scale = sound.id === 'whitenoise' ? 0.3 : sound.id === 'binaural' ? 0.15 : 0.6;
-        sound.gainNode.gain.setTargetAtTime(vol * scale, sound.ctx.currentTime, 0.05);
-      }
-    }
-  }, [activeSounds]);
+  const handleMasterVolume = (val: number) => {
+    setMasterVolume(val);
+    engineRef.current?.setMasterVolume(val);
+  };
 
-  const stopAll = useCallback(() => {
-    activeSounds.forEach(s => stopSingleSound(s));
-    setActiveSounds(new Map());
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    setTimeLeft(0);
-  }, [activeSounds, stopSingleSound]);
+  const handleMusicVolumeChange = (val: number) => {
+    setMusicVolume(val);
+    engineRef.current?.setMusicVolume(val);
+  };
 
-  const startTimer = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    setTimeLeft(timerMinutes * 60);
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          // Fade out and stop
-          setTimeout(() => stopAll(), 0);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [timerMinutes, stopAll]);
+  const formatCountdown = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
-  const playingCount = activeSounds.size;
-  const formatTime = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-  const [tab, setTab] = useState<'sounds' | 'music'>('sounds');
-  const [playingVideo, setPlayingVideo] = useState<string | null>(null);
+  const visibleChannels = SOUND_CHANNELS.filter(
+    (c) => categoryFilter === 'all' || c.category === categoryFilter
+  );
 
-  const faithPref = typeof localStorage !== 'undefined' ? localStorage.getItem('nm_faith_religion') : null;
+  const visibleTracks = SANCTUARY_MUSIC_TRACKS.filter(
+    (t) => musicCategory === 'all' || t.category === musicCategory
+  );
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="p-5 pb-24 md:pb-8 max-w-lg mx-auto">
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-4">
-          <h2 className="font-serif text-2xl text-forest-900 mb-1">Sounds & Music</h2>
-          <p className="text-sand-500 text-sm">ambient sounds and music therapy</p>
-        </motion.div>
-
-        {/* Tab bar */}
-        <div className="flex gap-1 bg-sand-100 p-1 rounded-xl mb-5">
-          <button onClick={() => setTab('sounds')}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'sounds' ? 'bg-white text-forest-700 shadow-sm' : 'text-sand-600'}`}>
-            🔊 Sounds
-          </button>
-          <button onClick={() => setTab('music')}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'music' ? 'bg-white text-forest-700 shadow-sm' : 'text-sand-600'}`}>
-            🎵 Music Therapy
-          </button>
-        </div>
-
-        {tab === 'music' && <MusicTherapy faithPref={faithPref} playingVideo={playingVideo} setPlayingVideo={setPlayingVideo} />}
-
-        {tab === 'sounds' && (<>
-        {/* Original sounds content below */}
-
-        {/* Timer + Stop controls */}
-        <div className="bg-white rounded-xl border border-sand-200 p-3 mb-5 flex items-center gap-3">
-          {playingCount > 0 && (
-            <button onClick={stopAll} className="text-clay-500 hover:text-clay-600 transition-colors flex-shrink-0">
-              <VolumeX className="w-5 h-5" />
-            </button>
-          )}
-          {playingCount === 0 && <Volume2 className="w-5 h-5 text-sand-400 flex-shrink-0" />}
-
-          <div className="flex-1 text-center">
-            {playingCount > 0 ? (
-              <span className="text-xs text-forest-600 font-medium">{playingCount} sound{playingCount > 1 ? 's' : ''} playing</span>
-            ) : (
-              <span className="text-xs text-sand-400">tap sounds below to mix</span>
-            )}
-          </div>
-
-          <div className="relative">
-            <button onClick={() => setShowTimer(!showTimer)}
-              className={`flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg transition-colors ${
-                timerMinutes > 0 ? 'bg-forest-100 text-forest-700' : 'bg-sand-100 text-sand-600 hover:bg-sand-200'
-              }`}>
-              <Timer className="w-3.5 h-3.5" />
-              {timeLeft > 0 ? formatTime(timeLeft) : timerMinutes > 0 ? `${timerMinutes}m` : 'Timer'}
-            </button>
-            {showTimer && (
-              <div className="absolute top-10 right-0 bg-white rounded-xl shadow-xl border border-sand-200 p-2 z-10 min-w-[120px]">
-                {TIMER_OPTIONS.map(opt => (
-                  <button key={opt.minutes} onClick={() => { setTimerMinutes(opt.minutes); setShowTimer(false); }}
-                    className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                      timerMinutes === opt.minutes ? 'bg-forest-50 text-forest-700 font-medium' : 'text-sand-700 hover:bg-sand-50'
-                    }`}>{opt.label}</button>
-                ))}
+    <div className="h-full overflow-y-auto bg-gradient-to-b from-forest-950 via-slate-950 to-forest-950 text-white">
+      <div className="p-4 md:p-6 pb-28 md:pb-10 max-w-5xl mx-auto space-y-5">
+        {/* ─── STUDIO HERO CONSOLE & REAL-TIME SPECTRUM VISUALIZER ─── */}
+        <div className="rounded-3xl bg-gradient-to-br from-forest-900/90 via-slate-900/95 to-indigo-950/90 border border-white/10 p-5 md:p-6 shadow-2xl">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+            <div>
+              <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-3 py-1 rounded-full mb-2">
+                <Radio className="w-3.5 h-3.5 animate-pulse" /> Sanctuary Acoustic &amp; Sleep Studio
               </div>
-            )}
+              <h2 className="font-serif text-2xl md:text-3xl text-white">
+                Real Nature Recordings, Polyphonic Music &amp; Sleep Sanctuary
+              </h2>
+              <p className="text-xs md:text-sm text-emerald-100/70 mt-0.5">
+                Layer real rain, ocean &amp; forest field recordings with live 432Hz/528Hz harmonic music and narrated bedtime stories.
+              </p>
+            </div>
+
+            {/* Sleep Timer & Stop All Console */}
+            <div className="flex items-center gap-2.5 self-start md:self-center">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowTimer(!showTimer)}
+                  className={`flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl border transition-all ${
+                    timeLeft > 0
+                      ? 'bg-amber-500/20 text-amber-200 border-amber-400/40'
+                      : 'bg-white/10 hover:bg-white/15 text-white border-white/15'
+                  }`}
+                >
+                  <Timer className="w-4 h-4 text-emerald-300" />
+                  <span>
+                    {timeLeft > 0
+                      ? `Fade in ${formatCountdown(timeLeft)}`
+                      : timerMinutes > 0
+                        ? `${timerMinutes}m Timer`
+                        : 'Sleep Timer'}
+                  </span>
+                </button>
+
+                <AnimatePresence>
+                  {showTimer && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      className="absolute top-11 right-0 bg-slate-900 rounded-2xl shadow-2xl border border-white/15 p-2 z-30 min-w-[145px]"
+                    >
+                      {TIMER_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.minutes}
+                          type="button"
+                          onClick={() => {
+                            startSleepTimer(opt.minutes);
+                            setShowTimer(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-xs rounded-xl transition-colors ${
+                            timerMinutes === opt.minutes
+                              ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
+                              : 'text-slate-200 hover:bg-white/10'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {isAnythingPlaying && (
+                <button
+                  type="button"
+                  onClick={stopEverything}
+                  className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-400/30 transition-all"
+                >
+                  <X className="w-4 h-4" />
+                  <span>Stop All</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Sound grid */}
-        <div className="space-y-3">
-          {SOUNDS.map((sound, i) => {
-            const isPlaying = activeSounds.has(sound.id);
-            const vol = volumes[sound.id] ?? 0.5;
-
-            return (
-              <motion.div key={sound.id}
-                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.04 }}
-                className={`rounded-2xl border transition-all ${
-                  isPlaying
-                    ? `bg-gradient-to-r ${sound.color} border-forest-200 shadow-sm`
-                    : 'bg-white border-sand-200'
+          {/* Live Spectrum Canvas + Master Gain Bar */}
+          <div className="bg-black/35 rounded-2xl border border-white/10 p-3.5 flex flex-col md:flex-row items-center gap-4">
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                  isAnythingPlaying
+                    ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30'
+                    : 'bg-white/10 text-slate-400'
                 }`}
               >
-                <div className="flex items-center gap-3 p-4">
-                  <button onClick={() => toggleSound(sound)}
-                    className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 transition-all ${
-                      isPlaying ? 'bg-white/70 shadow-sm' : 'bg-sand-100 hover:bg-sand-200'
-                    }`}>
-                    {isPlaying ? <Pause className="w-5 h-5 text-forest-700" /> : <Play className="w-5 h-5 text-sand-600 ml-0.5" />}
-                  </button>
+                {isAnythingPlaying ? <Disc3 className="w-5 h-5 animate-spin" /> : <Waves className="w-5 h-5" />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white truncate">
+                  {activeTrack
+                    ? `Playing: ${activeTrack.title}`
+                    : activeChannelCount > 0
+                      ? `${activeChannelCount} Real Soundscape Layer${activeChannelCount > 1 ? 's' : ''} Active`
+                      : 'Ready — Select a soundscape, preset, or music composition'}
+                </p>
+                <p className="text-[11px] text-slate-400 truncate">
+                  {activeTrack && activeChannelCount > 0
+                    ? `Layered with ${activeChannelCount} ambient nature recording(s)`
+                    : activeTrack
+                      ? `${activeTrack.artist} • ${activeTrack.frequencyBadge}`
+                      : 'Mix nature audio + polyphonic music simultaneously'}
+                </p>
+              </div>
+            </div>
 
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{sound.emoji}</span>
-                      <p className="font-medium text-forest-900 text-sm">{sound.name}</p>
-                    </div>
-                    <p className="text-xs text-sand-500 mt-0.5">{sound.description}</p>
-                  </div>
+            <div className="flex-1 w-full">
+              <canvas ref={canvasRef} width={360} height={42} className="w-full h-10 block" />
+            </div>
 
-                  {/* Waveform when playing */}
-                  {isPlaying && (
-                    <div className="flex items-end gap-0.5 h-5 mr-1">
-                      {[0,1,2,3].map(j => (
-                        <div key={j} className="w-0.5 bg-forest-500/60 rounded-full animate-bounce"
-                          style={{ animationDelay: `${j * 150}ms`, animationDuration: '0.8s', height: `${8 + (j % 3) * 5}px` }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
+            {/* Master Volume Slider */}
+            <div className="flex items-center gap-2 w-full md:w-44 flex-shrink-0">
+              <VolumeX className="w-4 h-4 text-slate-400 flex-shrink-0" />
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.02"
+                value={masterVolume}
+                onChange={(e) => handleMasterVolume(parseFloat(e.target.value))}
+                className="flex-1 h-1.5 accent-emerald-400 cursor-pointer"
+                aria-label="Master studio volume"
+              />
+              <Volume2 className="w-4 h-4 text-emerald-300 flex-shrink-0" />
+            </div>
+          </div>
 
-                {/* Volume slider when playing */}
-                {isPlaying && (
-                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
-                    className="px-4 pb-3">
-                    <div className="flex items-center gap-2">
-                      <VolumeX className="w-3 h-3 text-sand-400 flex-shrink-0" />
-                      <input type="range" min="0" max="1" step="0.05" value={vol}
-                        onChange={e => changeVolume(sound.id, parseFloat(e.target.value))}
-                        className="flex-1 h-1 accent-forest-600 cursor-pointer" />
-                      <Volume2 className="w-3 h-3 text-sand-400 flex-shrink-0" />
-                    </div>
-                  </motion.div>
-                )}
-              </motion.div>
-            );
-          })}
+          {/* 3-Pillar Studio Mode Switcher */}
+          <div className="grid grid-cols-3 gap-2 mt-4 bg-black/30 p-1.5 rounded-2xl border border-white/10">
+            <button
+              type="button"
+              onClick={() => setActiveTab('soundscapes')}
+              className={`py-2.5 px-3 rounded-xl text-xs md:text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'soundscapes'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md'
+                  : 'text-slate-300 hover:bg-white/5'
+              }`}
+            >
+              <Sliders className="w-4 h-4" />
+              <span>Real Soundscapes ({activeChannelCount})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('music')}
+              className={`py-2.5 px-3 rounded-xl text-xs md:text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'music'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md'
+                  : 'text-slate-300 hover:bg-white/5'
+              }`}
+            >
+              <Music className="w-4 h-4" />
+              <span>Sanctuary Music {activeTrack ? '• Live' : ''}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('stories')}
+              className={`py-2.5 px-3 rounded-xl text-xs md:text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'stories'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md'
+                  : 'text-slate-300 hover:bg-white/5'
+              }`}
+            >
+              <Moon className="w-4 h-4" />
+              <span>Sleep Stories</span>
+            </button>
+          </div>
         </div>
 
-        {/* Stop all */}
-        {playingCount > 0 && (
-          <div className="mt-5 text-center">
-            <button onClick={stopAll} className="text-sm text-sand-500 hover:text-clay-600 transition-colors inline-flex items-center gap-1">
-              <X className="w-4 h-4" /> stop all sounds
-            </button>
+        {/* ─── TAB 1: REAL FIELD RECORDINGS & BINAURAL SOUNDSCAPE MIXER ─── */}
+        {activeTab === 'soundscapes' && (
+          <div className="space-y-5">
+            {/* 1-Click Curated Atmosphere Presets */}
+            <div>
+              <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-emerald-300">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>1-Click Curated Atmosphere Mixes</span>
+                </div>
+                <span className="text-[11px] text-slate-400">Tap any scene to auto-mix multiple real channels</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                {SOUNDSCAPE_PRESETS.map((preset) => {
+                  const isSelected = activePresetId === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => applyPreset(preset.id, preset.mix)}
+                      className={`text-left p-3.5 rounded-2xl border transition-all active:scale-[0.98] ${
+                        isSelected
+                          ? 'bg-emerald-500/20 border-emerald-400 shadow-lg shadow-emerald-500/10'
+                          : 'bg-white/5 hover:bg-white/10 border-white/10'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-2xl">{preset.emoji}</span>
+                        {isSelected && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-400 text-slate-950 px-2 py-0.5 rounded-full">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs font-bold text-white leading-snug">{preset.name}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{preset.tagline}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Category Filter Pills */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+              {[
+                { id: 'all', label: 'All 12 Channels' },
+                { id: 'water', label: '🌧️ Rain, Ocean & Streams' },
+                { id: 'nature', label: '🌲 Forest & Night Meadow' },
+                { id: 'hearth', label: '🔥 Hearth & Cozy Spaces' },
+                { id: 'brainwave', label: '🎧 Singing Bowls & Binaural Waves' },
+              ].map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setCategoryFilter(cat.id as any)}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap border transition-all ${
+                    categoryFilter === cat.id
+                      ? 'bg-white text-slate-950 border-white font-semibold'
+                      : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 12 Multi-Track Sound Channels Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {visibleChannels.map((ch) => {
+                const isPlaying = Boolean(activeChannels[ch.id]);
+                const vol = volumes[ch.id] ?? 0.65;
+
+                return (
+                  <motion.div
+                    key={ch.id}
+                    layout
+                    className={`rounded-2xl border p-4 transition-all ${
+                      isPlaying
+                        ? `bg-gradient-to-br ${ch.accent} shadow-lg`
+                        : 'bg-white/[0.04] hover:bg-white/[0.07] border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleChannel(ch)}
+                        className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all ${
+                          isPlaying
+                            ? 'bg-emerald-400 text-slate-950 shadow-md shadow-emerald-500/20'
+                            : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                        aria-label={isPlaying ? `Mute ${ch.name}` : `Play ${ch.name}`}
+                      >
+                        {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+                      </button>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-300/90">
+                            {ch.badge}
+                          </span>
+                          <span className="text-lg">{ch.emoji}</span>
+                        </div>
+                        <h3 className="font-semibold text-white text-sm truncate mt-0.5">{ch.name}</h3>
+                        <p className="text-[11px] text-slate-300/80 line-clamp-2 mt-0.5">{ch.subtitle}</p>
+                      </div>
+                    </div>
+
+                    {/* Individual Channel Fader */}
+                    <div className="mt-3.5 pt-2.5 border-t border-white/10 flex items-center gap-2.5">
+                      <VolumeX className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.02"
+                        value={vol}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          handleChannelVolume(ch.id, v);
+                          if (!isPlaying && v > 0.05) {
+                            toggleChannel(ch);
+                          }
+                        }}
+                        className="flex-1 h-1.5 accent-emerald-400 cursor-pointer"
+                        aria-label={`${ch.name} volume`}
+                      />
+                      <span className="text-[11px] font-mono text-slate-300 w-9 text-right">
+                        {Math.round(vol * 100)}%
+                      </span>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
           </div>
         )}
 
-        {/* Headphone note for binaural */}
-        <p className="text-[10px] text-sand-400 text-center mt-6 leading-relaxed">
-          🎧 binaural beats require headphones to work properly
-        </p>
-        </>)}
+        {/* ─── TAB 2: SANCTUARY POLYPHONIC MUSIC & THERAPEUTIC COMPOSITIONS ─── */}
+        {activeTab === 'music' && (
+          <div className="space-y-5">
+            {/* Active Music Player Deck */}
+            {activeTrack && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={`rounded-3xl bg-gradient-to-r ${activeTrack.gradient} border border-emerald-400/30 p-5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4`}
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-white/15 backdrop-blur-md flex items-center justify-center text-3xl shadow-inner">
+                    {activeTrack.emoji}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-400 text-slate-950 px-2.5 py-0.5 rounded-full">
+                        Now Composing &amp; Streaming
+                      </span>
+                      <span className="text-xs text-emerald-200">{activeTrack.frequencyBadge}</span>
+                    </div>
+                    <h3 className="font-serif text-xl text-white mt-1">{activeTrack.title}</h3>
+                    <p className="text-xs text-slate-300">
+                      {activeTrack.artist} • {activeTrack.keySignature} • {activeTrack.bpm} BPM
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                  <div className="flex items-center gap-2 bg-black/30 px-3 py-2 rounded-xl border border-white/10">
+                    <Volume2 className="w-4 h-4 text-emerald-300" />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.02"
+                      value={musicVolume}
+                      onChange={(e) => handleMusicVolumeChange(parseFloat(e.target.value))}
+                      className="w-24 h-1.5 accent-emerald-400 cursor-pointer"
+                      aria-label="Music volume"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleMusicTrack(activeTrack)}
+                    className="px-4 py-2.5 rounded-xl bg-white text-slate-950 font-semibold text-xs flex items-center gap-1.5 shadow-md hover:bg-emerald-100 transition-all"
+                  >
+                    <Pause className="w-4 h-4" /> Pause
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Category filter */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+              {[
+                { id: 'all', label: 'All Compositions' },
+                { id: 'piano', label: '🎹 Felt Piano & Acoustic Harp' },
+                { id: 'healing', label: '✨ 528Hz Solfeggio Healing' },
+                { id: 'lofi', label: '🍵 Late-Night Lo-Fi Study' },
+                { id: 'sleep', label: '🌌 Deep Sleep Orchestral' },
+                { id: 'devotional', label: '🕉️ Spiritual & Raaga' },
+              ].map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setMusicCategory(c.id as any)}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap border transition-all ${
+                    musicCategory === c.id
+                      ? 'bg-white text-slate-950 border-white font-semibold'
+                      : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Music Track Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {visibleTracks.map((track) => {
+                const isPlaying = activeTrack?.id === track.id;
+                return (
+                  <div
+                    key={track.id}
+                    className={`rounded-2xl border p-5 transition-all flex flex-col justify-between ${
+                      isPlaying
+                        ? `bg-gradient-to-br ${track.gradient} border-emerald-400 shadow-xl`
+                        : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div className="flex items-center gap-3">
+                          <span className="text-3xl">{track.emoji}</span>
+                          <div>
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2 py-0.5 rounded-md">
+                              {track.frequencyBadge}
+                            </span>
+                            <h3 className="font-serif text-lg text-white mt-1 leading-snug">{track.title}</h3>
+                            <p className="text-xs text-slate-400">{track.artist}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-slate-300 leading-relaxed mt-2">{track.description}</p>
+                      <p className="text-[11px] text-emerald-200/70 font-mono mt-2">
+                        {track.keySignature} • {track.bpm} BPM
+                      </p>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleMusicTrack(track)}
+                        className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                          isPlaying
+                            ? 'bg-emerald-400 text-slate-950 shadow-md'
+                            : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                      >
+                        {isPlaying ? (
+                          <>
+                            <Pause className="w-4 h-4" />
+                            <span>Playing Live Instrumental</span>
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-4 h-4" />
+                            <span>Play Instrumental Stream</span>
+                          </>
+                        )}
+                      </button>
+
+                      {track.youtubeId && (
+                        <button
+                          type="button"
+                          onClick={() => setYoutubeVideoId(youtubeVideoId === track.youtubeId ? null : track.youtubeId!)}
+                          className="py-2.5 px-3 rounded-xl text-xs font-medium bg-white/5 hover:bg-white/15 text-slate-200 border border-white/10"
+                        >
+                          {youtubeVideoId === track.youtubeId ? 'Hide Video' : 'YouTube Stream'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Optional YouTube Devotional/Long-form Embed */}
+            {youtubeVideoId && (
+              <div className="rounded-2xl overflow-hidden border border-white/15 bg-black/50">
+                <div className="aspect-video w-full">
+                  <iframe
+                    src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&rel=0`}
+                    title="Sanctuary YouTube Stream"
+                    className="w-full h-full"
+                    allow="autoplay; encrypted-media"
+                    allowFullScreen
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── TAB 3: NARRATED SLEEP STORIES (Embedded Directly in the Studio) ─── */}
+        {activeTab === 'stories' && (
+          <div className="bg-warm-50 text-forest-900 rounded-3xl overflow-hidden border border-white/15 shadow-2xl">
+            <SleepStories embedded />
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
-// ─── MUSIC THERAPY COMPONENT ───
-interface MusicPlaylist {
-  id: string;
-  title: string;
-  emoji: string;
-  color: string;
-  videoId: string; // YouTube video ID
-  description: string;
-  faithOnly?: string; // show only for this faith
-}
-
-const PLAYLISTS: MusicPlaylist[] = [
-  { id: 'calm', title: 'Calm & Anxiety Relief', emoji: '😌', color: 'from-blue-50 to-cyan-50', videoId: 'lFcSrYw-ARY', description: 'Soothing music to ease anxiety' },
-  { id: 'sleep', title: 'Sleep Music', emoji: '😴', color: 'from-indigo-50 to-violet-50', videoId: '1ZYbU82GVz4', description: 'Drift off to deep relaxation' },
-  { id: 'meditation', title: 'Meditation', emoji: '🧘', color: 'from-amber-50 to-yellow-50', videoId: '77ZozI0rw7w', description: 'Mindful ambient sounds' },
-  { id: 'focus', title: 'Focus & Deep Work', emoji: '🎯', color: 'from-emerald-50 to-green-50', videoId: 'jfKfPfyJRdk', description: 'Lo-fi beats for concentration' },
-  { id: 'nasheed', title: 'Islamic Nasheeds', emoji: '🕌', color: 'from-emerald-50 to-teal-50', videoId: 'GNe38ZoIzlU', description: 'Peaceful nasheeds for the soul', faithOnly: 'islam' },
-  { id: 'bhajan', title: 'Hindu Devotional', emoji: '🕉️', color: 'from-orange-50 to-amber-50', videoId: 'AETFvQonfKA', description: 'Bhajans and kirtans', faithOnly: 'hinduism' },
-  { id: 'worship', title: 'Christian Worship', emoji: '✝️', color: 'from-blue-50 to-indigo-50', videoId: 'Fd_bueii9MY', description: 'Praise and worship music', faithOnly: 'christianity' },
-  { id: 'kirtan', title: 'Sikh Kirtan', emoji: '🪯', color: 'from-orange-50 to-yellow-50', videoId: 'f4QCxblcHGU', description: 'Gurbani shabad kirtan', faithOnly: 'sikhism' },
-];
-
-function MusicTherapy({ faithPref, playingVideo, setPlayingVideo }: {
-  faithPref: string | null;
-  playingVideo: string | null;
-  setPlayingVideo: (id: string | null) => void;
-}) {
-  // Filter: show universal + user's faith-specific playlists
-  const visible = PLAYLISTS.filter(p => !p.faithOnly || p.faithOnly === faithPref);
-
-  return (
-    <div className="space-y-4">
-      {/* Currently playing */}
-      {playingVideo && (
-        <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-2xl border border-sand-200 overflow-hidden shadow-sm">
-          <div className="aspect-video w-full">
-            <iframe
-              src={`https://www.youtube.com/embed/${playingVideo}?autoplay=1&rel=0`}
-              title="Music player"
-              className="w-full h-full rounded-t-2xl"
-              allow="autoplay; encrypted-media"
-              allowFullScreen
-            />
-          </div>
-          <div className="p-3 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {/* Waveform */}
-              <div className="flex items-end gap-0.5 h-4">
-                {[0,1,2,3].map(j => (
-                  <div key={j} className="w-0.5 bg-forest-500/60 rounded-full animate-bounce"
-                    style={{ animationDelay: `${j*150}ms`, animationDuration: '0.8s', height: `${8+(j%3)*5}px` }} />
-                ))}
-              </div>
-              <span className="text-xs text-forest-600 font-medium">now playing</span>
-            </div>
-            <button onClick={() => setPlayingVideo(null)}
-              className="text-xs text-sand-500 hover:text-clay-600 transition-colors">stop</button>
-          </div>
-        </motion.div>
-      )}
-
-      {/* Playlist cards */}
-      {visible.map((pl, i) => {
-        const isPlaying = playingVideo === pl.videoId;
-        return (
-          <motion.button key={pl.id}
-            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
-            onClick={() => setPlayingVideo(isPlaying ? null : pl.videoId)}
-            className={`w-full text-left rounded-2xl border p-4 transition-all active:scale-[0.98] ${
-              isPlaying
-                ? `bg-gradient-to-r ${pl.color} border-forest-200 shadow-sm`
-                : 'bg-white border-sand-200 hover:border-forest-200 hover:shadow-sm'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{pl.emoji}</span>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-forest-900 text-sm">{pl.title}</p>
-                <p className="text-xs text-sand-500 mt-0.5">{pl.description}</p>
-              </div>
-              {isPlaying ? (
-                <div className="flex items-end gap-0.5 h-4">
-                  {[0,1,2].map(j => (
-                    <div key={j} className="w-0.5 bg-forest-500 rounded-full animate-bounce"
-                      style={{ animationDelay: `${j*120}ms`, animationDuration: '0.6s', height: `${6+(j%3)*4}px` }} />
-                  ))}
-                </div>
-              ) : (
-                <Play className="w-5 h-5 text-sand-400" />
-              )}
-            </div>
-          </motion.button>
-        );
-      })}
-
-      <p className="text-[10px] text-sand-400 text-center mt-4 leading-relaxed">
-        music streams from YouTube • content by original creators
-      </p>
-    </div>
-  );
-}
-

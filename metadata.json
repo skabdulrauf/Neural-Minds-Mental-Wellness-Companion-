@@ -1,0 +1,11 @@
+{
+  "name": "NeuralMinds — Your Mindful Sanctuary",
+  "description": "A warm, full-stack mental wellness sanctuary featuring Mira AI with deep contextual memory, official Google & Firebase Cloud synchronization, interactive Google Maps support finder, and studio-grade Web Audio soundscapes.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

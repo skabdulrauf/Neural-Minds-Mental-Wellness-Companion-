@@ -58,8 +58,9 @@
   --color-dusk-800: #54415c;
   --color-dusk-900: #47384e;
 
-  --font-serif: "DM Serif Display", Georgia, serif;
-  --font-sans: "Inter", system-ui, sans-serif;
+  --font-serif: "Fraunces", "DM Serif Display", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
   --font-handwritten: "Caveat", cursive;
 }
 
@@ -101,8 +102,8 @@ body {
 }
 
 @keyframes breathe {
-  0%, 100% { transform: scale(1); opacity: 0.7; }
-  50% { transform: scale(1.15); opacity: 1; }
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50% { transform: scale(1.12); opacity: 1; }
 }
 
 @keyframes slideUp {
@@ -151,32 +152,18 @@ body {
 
 .chat-bubble-ai {
   position: relative;
-  border-radius: 2px 18px 18px 18px;
+  border-radius: 6px 20px 20px 20px;
   background: white;
   border: 1px solid var(--color-sand-200);
-  border-left: 3px solid var(--color-forest-400);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-
-.chat-bubble-ai::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -6px;
-  width: 12px;
-  height: 12px;
-  background: white;
-  border-left: 1px solid var(--color-sand-200);
-  border-top: 1px solid var(--color-sand-200);
-  clip-path: polygon(100% 0, 0 0, 100% 100%);
+  box-shadow: 0 2px 10px rgba(27, 57, 47, 0.04);
 }
 
 .chat-bubble-user {
   position: relative;
-  border-radius: 18px 2px 18px 18px;
-  background: var(--color-forest-600);
+  border-radius: 20px 6px 20px 20px;
+  background: linear-gradient(135deg, var(--color-forest-600), var(--color-forest-700));
   color: white;
-  box-shadow: 0 2px 8px rgba(45, 108, 83, 0.2);
+  box-shadow: 0 4px 14px rgba(45, 108, 83, 0.18);
 }
 
 .note-texture {

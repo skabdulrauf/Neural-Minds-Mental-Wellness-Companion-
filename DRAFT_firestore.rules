@@ -1,0 +1,141 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprint: UserProfile (/users/{userId})
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL', 'ageGroup',
+          'messageCount', 'distressedCount', 'streak', 'lastActiveDate', 'lastVisit',
+          'moodHistory', 'phq9Scores', 'journalEntries', 'concerns', 'miraMemory', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.updatedAt is number
+        && (!('email' in data) || data.email == null || (data.email is string && data.email.size() <= 254))
+        && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1024))
+        && (!('ageGroup' in data) || data.ageGroup == null || (data.ageGroup is string && data.ageGroup.size() <= 32))
+        && (!('messageCount' in data) || (data.messageCount is number && data.messageCount >= 0))
+        && (!('distressedCount' in data) || (data.distressedCount is number && data.distressedCount >= 0))
+        && (!('streak' in data) || (data.streak is number && data.streak >= 0))
+        && (!('lastActiveDate' in data) || (data.lastActiveDate is string && data.lastActiveDate.size() <= 32))
+        && (!('lastVisit' in data) || data.lastVisit is number)
+        && (!('moodHistory' in data) || (data.moodHistory is list && data.moodHistory.size() <= 365 && (data.moodHistory.size() == 0 || data.moodHistory[0] is map)))
+        && (!('phq9Scores' in data) || (data.phq9Scores is list && data.phq9Scores.size() <= 100 && (data.phq9Scores.size() == 0 || data.phq9Scores[0] is number)))
+        && (!('journalEntries' in data) || (data.journalEntries is list && data.journalEntries.size() <= 200 && (data.journalEntries.size() == 0 || data.journalEntries[0] is map)))
+        && (!('concerns' in data) || (data.concerns is list && data.concerns.size() <= 50 && (data.concerns.size() == 0 || (data.concerns[0] is string && data.concerns[0].size() <= 100))))
+        && (!('miraMemory' in data) || (data.miraMemory is list && data.miraMemory.size() <= 100 && (data.miraMemory.size() == 0 || data.miraMemory[0] is map)));
+    }
+
+    // Validation Blueprint: ChatThread (/chats/{userId})
+    function isValidChatThread(data) {
+      return data.keys().hasAll(['uid', 'messages', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'messages', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.messages is list && data.messages.size() <= 200
+        && (data.messages.size() == 0 || data.messages[0] is map)
+        && data.updatedAt is number;
+    }
+
+    // Validation Blueprint: SanctuaryState (/sanctuary_state/{userId})
+    function isValidSanctuaryState(data) {
+      return data.keys().hasAll(['uid', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'gardenEntries', 'futureLetters', 'firstAidItems',
+          'activeProgramJson', 'soundVolumesJson', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.updatedAt is number
+        && (!('gardenEntries' in data) || (data.gardenEntries is list && data.gardenEntries.size() <= 200 && (data.gardenEntries.size() == 0 || data.gardenEntries[0] is map)))
+        && (!('futureLetters' in data) || (data.futureLetters is list && data.futureLetters.size() <= 100 && (data.futureLetters.size() == 0 || data.futureLetters[0] is map)))
+        && (!('firstAidItems' in data) || (data.firstAidItems is list && data.firstAidItems.size() <= 100 && (data.firstAidItems.size() == 0 || data.firstAidItems[0] is map)))
+        && (!('activeProgramJson' in data) || (data.activeProgramJson is string && data.activeProgramJson.size() <= 20000))
+        && (!('soundVolumesJson' in data) || (data.soundVolumesJson is string && data.soundVolumesJson.size() <= 5000));
+    }
+
+    // Validation Blueprint: CrisisLog (/crisis_logs/{logId})
+    function isValidCrisisLog(data) {
+      return data.keys().hasAll(['uid', 'timestamp', 'messageSnippet'])
+        && data.keys().hasOnly(['uid', 'timestamp', 'messageSnippet'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.timestamp is number
+        && data.messageSnippet is string && data.messageSnippet.size() >= 1 && data.messageSnippet.size() <= 200;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'email', 'photoURL', 'ageGroup',
+          'messageCount', 'distressedCount', 'streak', 'lastActiveDate', 'lastVisit',
+          'moodHistory', 'phq9Scores', 'journalEntries', 'concerns', 'miraMemory', 'updatedAt'
+        ]);
+      allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    match /chats/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidChatThread(incoming());
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidChatThread(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['messages', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    match /sanctuary_state/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidSanctuaryState(incoming());
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidSanctuaryState(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'gardenEntries', 'futureLetters', 'firstAidItems',
+          'activeProgramJson', 'soundVolumesJson', 'updatedAt'
+        ]);
+      allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    match /crisis_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && existing().uid == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(logId) && isValidCrisisLog(incoming());
+    }
+  }
+}

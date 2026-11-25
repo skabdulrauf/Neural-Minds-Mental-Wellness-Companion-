@@ -7,6 +7,28 @@ export interface ChatMessage {
   riskLevel?: 'low' | 'moderate' | 'high' | 'critical';
 }
 
+export type MiraFactCategory = 'problem' | 'person' | 'goal' | 'event' | 'mood' | 'trigger' | 'win' | 'preference' | 'detail';
+
+export interface MiraMemoryFact {
+  id?: string;
+  type: MiraFactCategory;
+  text: string;
+  date: string;
+  pinned?: boolean;
+}
+
+export interface SanctuaryCloudState {
+  uid: string;
+  gardenPlants?: string;
+  futureLetters?: string;
+  activeProgram?: string;
+  firstAidKit?: string;
+  soundPresets?: string;
+  faithPreference?: string;
+  miraMode?: string;
+  updatedAt: number;
+}
+
 export interface UserProfile {
   uid?: string;
   displayName?: string;
@@ -24,6 +46,8 @@ export interface UserProfile {
   streak: number;
   lastActiveDate?: string;
   journalEntries: { date: string; content: string; prompt: string }[];
+  miraMemory?: MiraMemoryFact[];
+  updatedAt?: number;
 }
 
 export interface LocationData {

@@ -1,9 +1,12 @@
 import { ChatMessage, UserProfile } from '../utils/types';
 import { loadMiraMemory, formatDeepMemory } from '../utils/engagement';
-import { GROQ_API_KEY } from '../utils/constants';
+import { GROQ_API_KEY, hasValidGroqKey } from '../utils/constants';
+import { generateLocalMiraReply } from '../utils/miraEngine';
 
 function getGroqKey(): string {
-  return localStorage.getItem('neuralminds_groq_key') || GROQ_API_KEY;
+  const stored = localStorage.getItem('neuralminds_groq_key');
+  if (hasValidGroqKey(stored)) return stored!.trim();
+  return hasValidGroqKey(GROQ_API_KEY) ? GROQ_API_KEY : '';
 }
 
 // ──────────────────────────────────────────────
@@ -335,6 +338,10 @@ async function callGroqAPI(
   temperature: number,
   maxTokens: number
 ): Promise<string> {
+  if (!hasValidGroqKey(apiKey)) {
+    throw new Error('No valid Groq API key configured');
+  }
+
   for (const model of GROQ_MODELS) {
     try {
       const controller = new AbortController();
@@ -366,15 +373,17 @@ async function callGroqAPI(
         if (content) return content;
       }
 
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('Unauthorized Groq API key');
+      }
+
       if (response.status === 429) {
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
-
-      console.warn(`Model ${model} unavailable, trying next...`);
     } catch (error: any) {
+      if (error.message === 'Unauthorized Groq API key') throw error;
       if (error.name === 'AbortError') continue;
-      console.warn(`Model ${model} error:`, error.message);
     }
   }
 
@@ -442,9 +451,6 @@ function cleanKnowledgeResponse(text: string): string {
   return t;
 }
 
-// ──────────────────────────────────────────────
-// MAIN SEND FUNCTION — routes by intent
-// ──────────────────────────────────────────────
 export async function sendToGroq(
   messages: ChatMessage[],
   userMessage: string,
@@ -453,34 +459,87 @@ export async function sendToGroq(
   lang: string = 'en',
   ventMode: boolean = false
 ): Promise<string> {
-  const apiKey = getGroqKey();
-  const intent = detectIntent(userMessage);
+  const memoryFacts = loadMiraMemory();
+  const profileWithMem: UserProfile = {
+    ...profile,
+    miraMemory: memoryFacts,
+  };
 
-  // messages already includes the current user message (appended by ChatView)
-  // so we just map the last 12 — no need to push again
+  // 1. Primary: Call Server-Side Gemini ('gemini-4-hydrogen') via /api/mira/chat
+  try {
+    const { getSanctuarySummary, mergeMiraFacts } = await import('../utils/engagement');
+    const sanctuarySummary = getSanctuarySummary(profileWithMem);
+    const miraMode = typeof localStorage !== 'undefined' ? (localStorage.getItem('nm_mira_mode') || 'casual') : 'casual';
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 14000);
+
+    const res = await fetch('/api/mira/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: messages.slice(-16),
+        userMessage,
+        profile: profileWithMem,
+        emotion,
+        lang,
+        ventMode,
+        memoryFacts,
+        sanctuarySummary,
+        miraMode,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.extractedFacts) && data.extractedFacts.length > 0) {
+        mergeMiraFacts(data.extractedFacts);
+      }
+      if (data.reply && typeof data.reply === 'string' && data.reply.trim().length > 0) {
+        return data.reply.trim();
+      }
+    }
+  } catch {
+    // Proceed to secondary Groq or local engine fallback
+  }
+
+  // 2. Secondary: Call Groq if user configured a valid Groq key
+  const apiKey = getGroqKey();
+  if (!apiKey) {
+    return generateLocalMiraReply(userMessage, profileWithMem, messages, ventMode);
+  }
+
+  const intent = detectIntent(userMessage);
   const conversationHistory = messages.slice(-12).map(msg => ({
     role: msg.role as 'user' | 'assistant',
     content: msg.content,
   }));
 
-  if (intent === 'knowledge') {
-    const systemPrompt = buildKnowledgePrompt(profile, messages, lang);
-    const allMessages = [
-      { role: 'system', content: systemPrompt },
-      ...conversationHistory,
-    ];
-    const raw = await callGroqAPI(apiKey, allMessages, 0.3, 2000);
-    return cleanKnowledgeResponse(raw);
-  } else {
-    const systemPrompt = buildFriendPrompt(profile, emotion, profile.messageCount, messages, lang, ventMode);
-    const fewShot = ventMode ? [] : getFewShotExamples(); // Skip few-shot in vent mode — they include advice
-    const allMessages = [
-      { role: 'system', content: systemPrompt },
-      ...fewShot,
-      ...conversationHistory,
-    ];
-    const raw = await callGroqAPI(apiKey, allMessages, 0.9, 150);
-    return scrubAIPatterns(raw);
+  try {
+    if (intent === 'knowledge') {
+      const systemPrompt = buildKnowledgePrompt(profileWithMem, messages, lang);
+      const allMessages = [
+        { role: 'system', content: systemPrompt },
+        ...conversationHistory,
+      ];
+      const raw = await callGroqAPI(apiKey, allMessages, 0.3, 2000);
+      return cleanKnowledgeResponse(raw);
+    } else {
+      const systemPrompt = buildFriendPrompt(profileWithMem, emotion, profileWithMem.messageCount, messages, lang, ventMode);
+      const fewShot = ventMode ? [] : getFewShotExamples();
+      const allMessages = [
+        { role: 'system', content: systemPrompt },
+        ...fewShot,
+        ...conversationHistory,
+      ];
+      const raw = await callGroqAPI(apiKey, allMessages, 0.9, 150);
+      return scrubAIPatterns(raw);
+    }
+  } catch {
+    return generateLocalMiraReply(userMessage, profileWithMem, messages, ventMode);
   }
 }
 
@@ -502,6 +561,10 @@ export async function generateGreeting(profile: UserProfile): Promise<string> {
 
   try {
     const apiKey = getGroqKey();
+    if (!apiKey) {
+      if (lastVisit) return `hey${hasName ? ` ${name}` : ''} :) what's going on?`;
+      return `hey${hasName ? ` ${name}` : ''}, i'm mira. what's up?`;
+    }
 
     const prompt = lastVisit
       ? `You're Mira texting a friend${hasName ? ` named ${name}` : ''} who came back. It's ${timeVibe}. Write ONE short casual greeting (1 sentence). lowercase. no quotes. like:

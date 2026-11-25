@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { ArrowLeft, Loader2, Check, Lock, Wind, Grip, BookOpen, Trophy, Sparkles } from 'lucide-react';
 
 import { GROQ_API_KEY } from '../utils/constants';
+import { getCuratedProgramLesson } from '../utils/miraEngine';
 const API_KEY = GROQ_API_KEY;
 
 // ─── PROGRAM DEFINITIONS ───
@@ -78,7 +79,8 @@ function saveProgramState(state: ProgramState | null) {
 }
 
 // ─── AI CONTENT LOADER ───
-async function loadLesson(prompt: string, signal?: AbortSignal): Promise<string> {
+async function loadLesson(prompt: string, fallbackText: string, signal?: AbortSignal): Promise<string> {
+  if (!API_KEY) return fallbackText;
   const models = ['qwen/qwen3.8-27b', 'allam-2-7b', 'openai/gpt-oss-20b'];
   for (const model of models) {
     if (signal?.aborted) break;
@@ -89,7 +91,7 @@ async function loadLesson(prompt: string, signal?: AbortSignal): Promise<string>
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: 'You are a warm, knowledgeable wellness coach writing short daily lessons. Keep it to exactly 150 words. Be warm, practical, and never preachy. Write like a caring friend who knows their stuff.' },
+            { role: 'system', content: 'You are a warm, knowledgeable wellness coach writing short daily lessons. Keep it to around 150 words. Be warm, practical, and never preachy. Write like a caring friend who knows their stuff.' },
             { role: 'user', content: prompt },
           ],
           temperature: 0.7, max_tokens: 300,
@@ -103,7 +105,7 @@ async function loadLesson(prompt: string, signal?: AbortSignal): Promise<string>
       }
     } catch { /* next */ }
   }
-  return 'Could not load lesson. Please try again.';
+  return fallbackText;
 }
 
 // ─── MAIN COMPONENT ───
@@ -139,7 +141,6 @@ export default function Programs() {
   };
 
   const quitProgram = () => {
-    if (!confirm('Are you sure you want to quit this program? Progress will be lost.')) return;
     setProgState(null);
     saveProgramState(null);
     setViewingDay(null);
@@ -148,7 +149,6 @@ export default function Programs() {
 
   const openDay = async (day: number) => {
     if (!activeProg || !progState) return;
-    // Can only open current or completed days
     if (day > progState.currentDay) return;
 
     if (abortRef.current) abortRef.current.abort();
@@ -160,7 +160,8 @@ export default function Programs() {
     setLessonLoading(true);
 
     const dayDef = activeProg.days[day - 1];
-    const text = await loadLesson(dayDef.prompt, ctrl.signal);
+    const fallbackLesson = getCuratedProgramLesson(activeProg.id, day);
+    const text = await loadLesson(dayDef.prompt, fallbackLesson, ctrl.signal);
     if (mountedRef.current && !ctrl.signal.aborted) {
       setLesson(text);
       setLessonLoading(false);
@@ -175,13 +176,14 @@ export default function Programs() {
     setProgState(updated);
     saveProgramState(updated);
 
-    // If all 7 days completed, show certificate
     if (completed.length >= 7) {
       setViewingDay(null);
       setShowCert(true);
       setCertLoading(true);
+      const fallbackCert = `you showed up for all seven days of ${activeProg?.title || 'your program'}. that consistency — even on the days when your energy was low — is how real change happens. keep carrying these small habits with you. — Mira`;
       const certText = await loadLesson(
-        `Write a warm, celebratory congratulations message for someone named "Champion" who just completed the "${activeProg?.title}" program. Tell them how proud you are. Remind them this is just the beginning. Make it feel like a real friend celebrating with them. 100 words. End with "— Mira 💚"`
+        `Write a warm, celebratory congratulations message for someone who just completed the "${activeProg?.title}" program. 100 words. End with "— Mira"`,
+        fallbackCert
       );
       if (mountedRef.current) { setCertMessage(certText); setCertLoading(false); }
     } else {

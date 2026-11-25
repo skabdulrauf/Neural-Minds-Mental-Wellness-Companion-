@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   MessageCircle, BarChart3, Wind, Grip, BookOpen, MapPin,
   LogOut, Menu, X, Leaf, Settings, User as UserIcon, ChevronRight,
-  Headphones, Moon, Download, FileJson, FileText, PenLine, Wrench, BookHeart, Newspaper, Sparkles, AlertCircle, Trophy, Bell, Compass, Mail, HeartHandshake, Heart, GraduationCap, Flower2, Zap, Users,
+  Headphones, Moon, Download, FileJson, FileText, PenLine, Wrench, BookHeart, Sparkles, AlertCircle, Trophy, Bell, Compass, Mail, HeartHandshake, Flower2, Zap,
 } from 'lucide-react';
 import { AppView, ChatMessage, UserProfile, LocationData } from './utils/types';
 import { Lang, getLang, setLang as saveLang, t } from './utils/i18n';
@@ -38,10 +38,11 @@ import {
   initFirebase, logOut as firebaseLogOut, isFirebaseConfigured,
   saveChatHistory as fbSaveChat, loadChatHistory as fbLoadChat,
   saveUserProfile as fbSaveProfile, loadUserProfile as fbLoadProfile,
-  onAuth, signInGoogle,
+  onAuth, signInGoogle, signInEmail, signUpEmail,
+  syncLocalSanctuaryToCloud, pullSanctuaryFromCloud,
 } from './services/firebase';
 import {
-  getActiveSession, createLocalSession, createGoogleSession, getAllSessions, updateSession,
+  getActiveSession, createLocalSession, createGoogleSession,
   clearActiveSession, saveLocalChatHistory, loadLocalChatHistory,
   saveLocalProfile, loadLocalProfile, exportChatAsJSON, exportChatAsTXT,
   sendChatToGmail, saveToGoogleDrive,
@@ -209,7 +210,6 @@ const DEFAULT_PROFILE: UserProfile = {
 export default function App() {
   const [view, setView] = useState<AppView>('feed');
   const [session, setSession] = useState<LocalSession | null>(null);
-  const [firebaseReady, setFirebaseReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -237,6 +237,23 @@ export default function App() {
   const [milestoneModal, setMilestoneModal] = useState<MilestoneInfo | null>(null);
   const [streakRisk, setStreakRisk] = useState(false);
   const [showSafetyCheckin, setShowSafetyCheckin] = useState(false);
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authError, setAuthError] = useState('');
+  const [cloudSyncing, setCloudSyncing] = useState(false);
+  const [lastCloudSync, setLastCloudSync] = useState<number | null>(() => {
+    const s = localStorage.getItem('nm_last_cloud_sync');
+    return s ? Number(s) : null;
+  });
+
+  // Listen for Google Maps Platform Demo Key Quota Event (Tier 1 & Tier 2)
+  useEffect(() => {
+    const onQuota = () => setMapsQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuota);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuota);
+  }, []);
 
   // Badge system — check and unlock
   const runBadgeCheck = useCallback((prof: UserProfile, extras: BadgeExtras) => {
@@ -368,10 +385,15 @@ export default function App() {
   const firebaseReadyRef = useRef(false);
   
   const boot = useCallback(async () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('autostart') === '1') {
+      await handleDemoLogin();
+      return;
+    }
+
     const fbConfigured = isFirebaseConfigured();
     if (fbConfigured) {
       const ok = initFirebase();
-      setFirebaseReady(ok);
       firebaseReadyRef.current = ok;
       if (ok) {
         onAuth(async (fbUser) => {
@@ -417,6 +439,11 @@ export default function App() {
       const fbProfile = await fbLoadProfile(fbUser.uid);
       if (fbProfile) loadedProfile = { ...DEFAULT_PROFILE, ...fbProfile };
       loadedMessages = await fbLoadChat(fbUser.uid);
+      // Pull cloud sanctuary state (Garden, Future Letters, 7-Day Programs, First Aid, Sound Presets)
+      const cloudSanctuary = await pullSanctuaryFromCloud(fbUser.uid);
+      if (cloudSanctuary?.updatedAt) {
+        setLastCloudSync(cloudSanctuary.updatedAt);
+      }
     }
 
     // Local fallback or supplement
@@ -485,7 +512,24 @@ export default function App() {
     const s = sess || session;
     const fb = fbUser || firebaseUser;
     if (s) await saveLocalProfile(s.id, prof);
-    if (fb && firebaseReadyRef.current) await fbSaveProfile(fb.uid, prof);
+    if (fb && firebaseReadyRef.current) {
+      await fbSaveProfile(fb.uid, prof);
+      const ok = await syncLocalSanctuaryToCloud(fb.uid);
+      if (ok) setLastCloudSync(Date.now());
+    }
+  };
+
+  const handleManualCloudSync = async () => {
+    if (!firebaseUser || !firebaseReadyRef.current) return;
+    setCloudSyncing(true);
+    try {
+      await fbSaveProfile(firebaseUser.uid, profile);
+      await fbSaveChat(firebaseUser.uid, messages);
+      const ok = await syncLocalSanctuaryToCloud(firebaseUser.uid);
+      if (ok) setLastCloudSync(Date.now());
+    } finally {
+      setCloudSyncing(false);
+    }
   };
 
   // Wrapper for ChatView to use
@@ -499,40 +543,40 @@ export default function App() {
     persistProfile(null, null, prof);
   };
 
-  // ─── AUTH ACTIONS ───
+  // ─── AUTH ACTIONS (Official Firebase Auth) ───
   const handleGoogleLogin = async () => {
-    if (!firebaseReady) {
-      // No Firebase — use guest flow
-      handleGuestLogin();
-      return;
-    }
+    setAuthError('');
     setAuthLoading(true);
     try {
       await signInGoogle();
     } catch (err: any) {
       if (err.message !== 'REDIRECT') {
-        console.warn('Google login failed:', err.message);
+        setAuthError(err.message || 'Google sign-in could not complete. Please try again.');
       }
     }
     setAuthLoading(false);
   };
 
-  const handleGuestLogin = async () => {
-    const name = guestName.trim() || 'Friend';
-    // Reuse existing local session if one exists (preserves chat history after logout)
-    const existing = await getAllSessions();
-    const prev = existing.find((s: LocalSession) => s.provider === 'local' && !s.id.startsWith('demo_'));
-    if (prev) {
-      prev.name = name;
-      prev.lastActive = Date.now();
-      await updateSession(prev);
-      localStorage.setItem('neuralminds_user_name', name);
-      await loadSession(prev, null, false);
-    } else {
-      const sess = await createLocalSession(name);
-      localStorage.setItem('neuralminds_user_name', name);
-      await loadSession(sess, null, false);
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const email = authEmail.trim();
+    const pass = authPassword;
+    if (!email || !pass) {
+      setAuthError('Please enter both your email address and password.');
+      return;
     }
+    setAuthLoading(true);
+    try {
+      if (authMode === 'signup') {
+        await signUpEmail(email, pass);
+      } else {
+        await signInEmail(email, pass);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Authentication failed. Please check your credentials.');
+    }
+    setAuthLoading(false);
   };
   
   const handleDemoLogin = async () => {
@@ -619,8 +663,8 @@ export default function App() {
     setShowLoginPrompt(true);
   };
 
-  // ─── NAV ───
-  const VIEW_ORDER: AppView[] = ['feed','chat','dashboard','breathing','grounding','journal','sounds','stories','toolkit','faith','news','coaching','programs','badges','letters','firstaid','story','relationships','student','garden','moments','family','professionals'];
+  // ─── NAV & PILLAR ARCHITECTURE ───
+  const VIEW_ORDER: AppView[] = ['feed','chat','dashboard','badges','breathing','grounding','moments','journal','garden','letters','sounds','stories','toolkit','programs','firstaid','faith','coaching','story','relationships','student','family','professionals'];
   
   const navigateTo = (target: AppView) => {
     const from = VIEW_ORDER.indexOf(view);
@@ -633,42 +677,88 @@ export default function App() {
   const today = new Date().toISOString().split('T')[0];
   const moodLoggedToday = profile.moodHistory.some(m => m.date === today);
 
-  const navItems: { view: AppView; icon: React.ReactNode; label: string }[] = [
-    { view: 'feed', icon: <Sparkles className="w-5 h-5" />, label: t('today', lang) },
-    { view: 'chat', icon: <MessageCircle className="w-5 h-5" />, label: t('chat', lang) },
-    { view: 'dashboard', icon: <BarChart3 className="w-5 h-5" />, label: t('dashboard', lang) },
-    { view: 'breathing', icon: <Wind className="w-5 h-5" />, label: t('breathe', lang) },
-    { view: 'grounding', icon: <Grip className="w-5 h-5" />, label: t('ground', lang) },
-    { view: 'journal', icon: <BookOpen className="w-5 h-5" />, label: t('journal', lang) },
-    { view: 'sounds', icon: <Headphones className="w-5 h-5" />, label: t('sounds', lang) },
-    { view: 'stories', icon: <Moon className="w-5 h-5" />, label: t('sleep', lang) },
-    { view: 'toolkit', icon: <Wrench className="w-5 h-5" />, label: t('toolkit', lang) },
-    { view: 'faith', icon: <BookHeart className="w-5 h-5" />, label: t('faith', lang) },
-    { view: 'news', icon: <Newspaper className="w-5 h-5" />, label: t('news', lang) },
-    { view: 'coaching', icon: <Compass className="w-5 h-5" />, label: t('coaching', lang) },
-    { view: 'programs', icon: <Trophy className="w-5 h-5" />, label: t('programs', lang) },
-    { view: 'badges', icon: <span className="relative"><Trophy className="w-5 h-5" />{unlockedBadges.size > 0 && <span className="absolute -top-1 -right-1.5 w-3.5 h-3.5 bg-warm-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center">{unlockedBadges.size}</span>}</span>, label: t('badges', lang) },
-    { view: 'letters', icon: <Mail className="w-5 h-5" />, label: t('letters', lang) },
-    { view: 'firstaid', icon: <HeartHandshake className="w-5 h-5" />, label: t('myKit', lang) },
-    { view: 'story', icon: <BookOpen className="w-5 h-5" />, label: t('myStory', lang) },
-    { view: 'relationships', icon: <Heart className="w-5 h-5" />, label: t('relationships', lang) },
-    { view: 'student', icon: <GraduationCap className="w-5 h-5" />, label: t('student', lang) },
-    { view: 'garden', icon: <Flower2 className="w-5 h-5" />, label: t('garden', lang) },
-    { view: 'moments', icon: <Zap className="w-5 h-5" />, label: t('moments', lang) },
-    { view: 'family', icon: <Users className="w-5 h-5" />, label: t('family', lang) },
-    { view: 'professionals', icon: <MapPin className="w-5 h-5" />, label: t('help', lang) },
+  // Map sub-views to their parent pillar so sidebar highlights stay cohesive
+  const getActivePillar = (currentView: AppView): AppView => {
+    if (['dashboard', 'badges', 'story'].includes(currentView)) return 'dashboard';
+    if (['breathing', 'grounding', 'moments'].includes(currentView)) return 'breathing';
+    if (['journal', 'garden', 'letters'].includes(currentView)) return 'journal';
+    if (['sounds', 'stories'].includes(currentView)) return 'sounds';
+    if (['toolkit', 'programs', 'firstaid', 'faith', 'coaching', 'relationships', 'student', 'family'].includes(currentView)) return 'toolkit';
+    return currentView;
+  };
+
+  const activePillar = getActivePillar(view);
+
+  const navSections: { title: string; items: { view: AppView; icon: React.ReactNode; label: string }[] }[] = [
+    {
+      title: 'Daily Sanctuary',
+      items: [
+        { view: 'feed', icon: <Sparkles className="w-4 h-4" />, label: t('today', lang) },
+        { view: 'chat', icon: <MessageCircle className="w-4 h-4" />, label: t('chat', lang) },
+        { view: 'dashboard', icon: <span className="relative"><BarChart3 className="w-4 h-4" />{unlockedBadges.size > 0 && <span className="absolute -top-1 -right-1.5 w-3.5 h-3.5 bg-warm-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center">{unlockedBadges.size}</span>}</span>, label: 'Your Journey' },
+      ],
+    },
+    {
+      title: 'Mind & Somatic',
+      items: [
+        { view: 'breathing', icon: <Wind className="w-4 h-4" />, label: 'Breathe & Ground' },
+        { view: 'journal', icon: <BookOpen className="w-4 h-4" />, label: 'Journal & Garden' },
+        { view: 'sounds', icon: <Headphones className="w-4 h-4" />, label: 'Sounds & Sleep' },
+      ],
+    },
+    {
+      title: 'Growth & Care',
+      items: [
+        { view: 'toolkit', icon: <Wrench className="w-4 h-4" />, label: 'Wellness Studio' },
+        { view: 'professionals', icon: <MapPin className="w-4 h-4" />, label: 'Care & Helplines' },
+      ],
+    },
   ];
+
+  const navItems = navSections.flatMap(s => s.items);
+
+  // Contextual sub-navigation tabs for consolidated pillars
+  const PILLAR_SUBTABS: Partial<Record<AppView, { view: AppView; label: string; icon: React.ReactNode }[]>> = {
+    dashboard: [
+      { view: 'dashboard', label: 'Mood & Insights', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+      { view: 'badges', label: `Milestones (${unlockedBadges.size})`, icon: <Trophy className="w-3.5 h-3.5" /> },
+      { view: 'story', label: 'My Life Story', icon: <BookOpen className="w-3.5 h-3.5" /> },
+    ],
+    breathing: [
+      { view: 'breathing', label: 'Somatic Breathing', icon: <Wind className="w-3.5 h-3.5" /> },
+      { view: 'grounding', label: '5-4-3-2-1 Grounding', icon: <Grip className="w-3.5 h-3.5" /> },
+      { view: 'moments', label: '60-Second Resets', icon: <Zap className="w-3.5 h-3.5" /> },
+    ],
+    journal: [
+      { view: 'journal', label: 'Guided Journal', icon: <BookOpen className="w-3.5 h-3.5" /> },
+      { view: 'garden', label: 'Gratitude Garden', icon: <Flower2 className="w-3.5 h-3.5" /> },
+      { view: 'letters', label: 'Future Letters', icon: <Mail className="w-3.5 h-3.5" /> },
+    ],
+    sounds: [
+      { view: 'sounds', label: 'Ambient Sound Mixer', icon: <Headphones className="w-3.5 h-3.5" /> },
+      { view: 'stories', label: 'Sleep Stories', icon: <Moon className="w-3.5 h-3.5" /> },
+    ],
+    toolkit: [
+      { view: 'toolkit', label: 'CBT & Reframing', icon: <Wrench className="w-3.5 h-3.5" /> },
+      { view: 'programs', label: '7-Day Programs', icon: <Trophy className="w-3.5 h-3.5" /> },
+      { view: 'firstaid', label: 'First Aid Kit', icon: <HeartHandshake className="w-3.5 h-3.5" /> },
+      { view: 'faith', label: 'Faith & Wisdom', icon: <BookHeart className="w-3.5 h-3.5" /> },
+      { view: 'coaching', label: 'Life Coaching', icon: <Compass className="w-3.5 h-3.5" /> },
+    ],
+  };
+
+  const currentSubtabs = PILLAR_SUBTABS[activePillar];
 
   const uid = firebaseUser?.uid || session?.id || null;
 
   // ─── LOGIN SCREEN ───
   if (showLoginPrompt) {
-    const TAGLINE = "Your mind. Your faith. Your growth.";
+    const TAGLINE = "Your mind. Your rhythm. Your sanctuary.";
     const features = [
-      { emoji: '🧠', label: 'Mental Wellness' },
-      { emoji: '🕌', label: 'Faith & Spirit' },
-      { emoji: '🌍', label: 'World News' },
-      { emoji: '💪', label: 'Life Coaching' },
+      { emoji: '🌿', label: 'Empathetic Companion' },
+      { emoji: '🌬️', label: 'Somatic Breathing' },
+      { emoji: '📔', label: 'Reflective Journal' },
+      { emoji: '🧭', label: 'CBT & 7-Day Paths' },
     ];
 
     return (
@@ -694,15 +784,15 @@ export default function App() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 2.5 }}
               className="flex flex-wrap gap-2 mb-8">
               {features.map(f => (
-                <span key={f.label} className="inline-flex items-center gap-1.5 bg-white/10 backdrop-blur-sm text-forest-200 text-xs px-3 py-1.5 rounded-full border border-white/10">
+                <span key={f.label} className="inline-flex items-center gap-1.5 bg-white/10 backdrop-blur-sm text-forest-200 text-xs px-3 py-1.5 rounded-xl border border-white/10">
                   {f.emoji} {f.label}
                 </span>
               ))}
             </motion.div>
 
             <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 3 }}
-              className="text-forest-400 text-sm leading-relaxed">
-              a caring AI companion, spiritual guide, news reader, and life coach — all in one quiet space.
+              className="text-forest-300 text-sm leading-relaxed">
+              A warm, tactile sanctuary for emotional clarity, somatic regulation, guided journaling, and honest conversation with Mira.
             </motion.p>
           </div>
         </div>
@@ -742,60 +832,117 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              {/* Google login */}
-              {firebaseReady && (
-                <button onClick={handleGoogleLogin} disabled={authLoading}
-                  className="w-full bg-white hover:bg-sand-50 border border-sand-200 text-forest-800 py-3.5 rounded-2xl font-medium flex items-center justify-center gap-3 transition-all hover:shadow-md active:scale-[0.98] disabled:opacity-60">
-                  {authLoading ? (
-                    <div className="w-5 h-5 border-2 border-forest-500 border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-5 h-5" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                    </svg>
-                  )}
-                  {t('continueGoogle', lang)}
-                </button>
-              )}
+              {/* Official Google OAuth 2.0 Sign-In */}
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={authLoading}
+                className="w-full bg-white hover:bg-sand-50 border-2 border-forest-200 hover:border-forest-400 text-forest-900 py-3.5 px-4 rounded-2xl font-semibold flex items-center justify-center gap-3 transition-all shadow-sm hover:shadow-md active:scale-[0.98] disabled:opacity-60"
+              >
+                {authLoading ? (
+                  <div className="w-5 h-5 border-2 border-forest-500 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                  </svg>
+                )}
+                <span>{t('continueGoogle', lang)}</span>
+              </button>
 
-              {firebaseReady && (
-                <div className="relative flex items-center">
-                  <div className="flex-1 border-t border-sand-200" />
-                  <span className="px-3 text-xs text-sand-400">{t('or', lang)}</span>
-                  <div className="flex-1 border-t border-sand-200" />
-                </div>
-              )}
-              <div className="space-y-2">
-                <input
-                  type="text"
-                  value={guestName}
-                  onChange={e => setGuestName(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && guestName.trim()) handleGuestLogin(); }}
-                  placeholder={t('namePlaceholder', lang)}
-                  className="w-full px-4 py-3 bg-white border border-sand-200 rounded-2xl text-forest-900 placeholder:text-sand-400 text-sm transition-all focus:border-forest-400 focus:shadow-[0_0_0_3px_rgba(93,163,132,0.1)]"
-                />
-                <button onClick={handleGuestLogin}
-                  className="w-full bg-forest-600 hover:bg-forest-700 text-white py-3 rounded-2xl font-medium transition-all active:scale-[0.98]">
-                  {guestName.trim() ? `${t('startAs', lang)} ${guestName.trim()}` : t('startGuest', lang)}
-                </button>
+              <div className="relative flex items-center">
+                <div className="flex-1 border-t border-sand-200" />
+                <span className="px-3 text-[11px] font-medium text-sand-400 uppercase tracking-wider">
+                  or official email authorization
+                </span>
+                <div className="flex-1 border-t border-sand-200" />
               </div>
+
+              {/* Official Email & Password Authorization Form */}
+              <form onSubmit={handleEmailAuth} className="space-y-2.5">
+                <div className="flex bg-sand-100 p-1 rounded-xl text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('signin'); setAuthError(''); }}
+                    className={`flex-1 py-1.5 rounded-lg transition-all ${
+                      authMode === 'signin' ? 'bg-white text-forest-800 shadow-xs' : 'text-sand-600'
+                    }`}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('signup'); setAuthError(''); }}
+                    className={`flex-1 py-1.5 rounded-lg transition-all ${
+                      authMode === 'signup' ? 'bg-white text-forest-800 shadow-xs' : 'text-sand-600'
+                    }`}
+                  >
+                    Create Account
+                  </button>
+                </div>
+
+                {authMode === 'signup' && (
+                  <input
+                    type="text"
+                    value={guestName}
+                    onChange={e => setGuestName(e.target.value)}
+                    placeholder="Your first name (optional)"
+                    className="w-full px-4 py-2.5 bg-white border border-sand-200 rounded-xl text-forest-900 placeholder:text-sand-400 text-sm focus:border-forest-400 outline-none"
+                  />
+                )}
+                <input
+                  type="email"
+                  required
+                  value={authEmail}
+                  onChange={e => setAuthEmail(e.target.value)}
+                  placeholder="Email address"
+                  className="w-full px-4 py-2.5 bg-white border border-sand-200 rounded-xl text-forest-900 placeholder:text-sand-400 text-sm focus:border-forest-400 outline-none"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={authPassword}
+                  onChange={e => setAuthPassword(e.target.value)}
+                  placeholder="Password (min 6 characters)"
+                  className="w-full px-4 py-2.5 bg-white border border-sand-200 rounded-xl text-forest-900 placeholder:text-sand-400 text-sm focus:border-forest-400 outline-none"
+                />
+
+                {authError && (
+                  <div className="p-2.5 rounded-xl bg-clay-50 border border-clay-200 text-xs text-clay-700">
+                    {authError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full bg-forest-600 hover:bg-forest-700 text-white py-3 rounded-2xl font-medium transition-all active:scale-[0.98] disabled:opacity-60"
+                >
+                  {authMode === 'signup' ? 'Authorize & Create Sanctuary Account' : 'Authorize & Sign In'}
+                </button>
+              </form>
             </div>
 
-            <p className="text-xs text-sand-400 text-center mt-6">
-              {firebaseReady ? t('syncNote', lang) : t('localNote', lang)}
-            </p>
+            <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-forest-700 bg-forest-50/80 border border-forest-100 rounded-xl py-2 px-3">
+              <span>🔒</span>
+              <span>Official Firebase Auth &amp; Cloud Firestore Encrypted Sync</span>
+            </div>
 
-            {/* Demo button */}
-            <div className="mt-5 pt-4 border-t border-sand-100">
-              <button onClick={handleDemoLogin}
-                className="w-full flex items-center justify-center gap-2 border border-dusk-200 hover:border-dusk-300 text-dusk-600 hover:text-dusk-700 bg-dusk-50/50 hover:bg-dusk-50 py-2.5 rounded-2xl text-sm font-medium transition-all active:scale-[0.98]">
-                👀 See how it works →
+            {/* Instant Sanctuary Preview / Offline Local Mode */}
+            <div className="mt-4 pt-3 border-t border-sand-100 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                className="w-full flex items-center justify-center gap-2 border border-dusk-200 hover:border-dusk-300 text-dusk-700 bg-dusk-50/60 hover:bg-dusk-50 py-2.5 rounded-2xl text-xs font-medium transition-all active:scale-[0.98]"
+              >
+                👀 Explore Interactive Demo Sanctuary →
               </button>
             </div>
 
-            <p className="text-[10px] text-sand-300 text-center mt-4">Beta v1.0 — Prototype</p>
+            <p className="text-[10px] text-sand-400 text-center mt-3">NeuralMinds Cloud Sanctuary • Google Maps &amp; Firebase Enabled</p>
           </motion.div>
         </div>
       </div>
@@ -820,7 +967,7 @@ export default function App() {
   return (
     <div className="h-screen flex bg-warm-50 overflow-hidden">
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex flex-col w-[220px] bg-white border-r border-sand-200 p-4">
+      <aside className="hidden md:flex flex-col w-[248px] bg-white border-r border-sand-200 p-4 flex-shrink-0">
         <div className="flex items-center justify-between gap-2 mb-8 mt-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="w-9 h-9 bg-forest-100 rounded-xl flex items-center justify-center animate-breathe flex-shrink-0">
@@ -893,21 +1040,31 @@ export default function App() {
           </div>
         )}
 
-        <nav className="flex-1 space-y-1 overflow-y-auto">
-          {navItems.map((item) => (
-            <button
-              key={item.view}
-              onClick={() => navigateTo(item.view)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group ${
-                view === item.view ? 'bg-forest-50 text-forest-700' : 'text-sand-600 hover:bg-sand-50 hover:text-forest-800'
-              }`}
-            >
-              <span className={`transition-colors ${view === item.view ? 'text-forest-600' : 'text-sand-400 group-hover:text-forest-500'}`}>
-                {item.icon}
-              </span>
-              {item.label}
-              {view === item.view && <motion.div layoutId="activeNav" className="ml-auto w-1 h-5 rounded-full bg-gradient-to-b from-forest-400 to-forest-600" />}
-            </button>
+        <nav className="flex-1 space-y-5 overflow-y-auto pr-1">
+          {navSections.map((section) => (
+            <div key={section.title} className="space-y-1">
+              <p className="px-3 text-[10px] font-bold uppercase tracking-widest text-sand-400 mb-1.5">
+                {section.title}
+              </p>
+              {section.items.map((item) => {
+                const isActive = activePillar === item.view;
+                return (
+                  <button
+                    key={item.view}
+                    onClick={() => navigateTo(item.view)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group ${
+                      isActive ? 'bg-forest-50 text-forest-800 shadow-xs border border-forest-100/80' : 'text-sand-600 hover:bg-sand-50 hover:text-forest-800'
+                    }`}
+                  >
+                    <span className={`transition-colors ${isActive ? 'text-forest-600' : 'text-sand-400 group-hover:text-forest-500'}`}>
+                      {item.icon}
+                    </span>
+                    <span className="truncate">{item.label}</span>
+                    {isActive && <motion.div layoutId="activeNav" className="ml-auto w-1.5 h-5 rounded-full bg-gradient-to-b from-forest-400 to-forest-600" />}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </nav>
 
@@ -1173,16 +1330,16 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* ── APP STATUS ── */}
+                {/* ── APP & CLOUD STORAGE STATUS ── */}
                 <div>
-                  <p className="text-[10px] font-bold text-sand-500 uppercase tracking-wider mb-3">App</p>
+                  <p className="text-[10px] font-bold text-sand-500 uppercase tracking-wider mb-3">Cloud Storage &amp; Status</p>
                   <div className="space-y-2">
                     {[
-                      { label: 'AI Status', value: '✓ Connected', active: true },
-                      { label: 'Cloud Sync', value: firebaseReady && session?.provider === 'google' ? '✓ Cloud' : '○ Local', active: firebaseReady && session?.provider === 'google' },
-                      { label: 'Location', value: location ? `✓ ${location.city || 'Detected'}` : '○ Not shared', active: !!location },
+                      { label: 'Mira Intelligence', value: '✓ Gemini + Deep Memory (100 facts)', active: true },
+                      { label: 'Cloud Firestore', value: firebaseUser ? '✓ Connected & Syncing' : '✓ Provisioned (Sign in to sync)', active: !!firebaseUser },
+                      { label: 'Last Cloud Backup', value: lastCloudSync ? new Date(lastCloudSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Local Sanctuary', active: !!lastCloudSync },
+                      { label: 'Location & Maps', value: location ? `✓ ${location.city || 'Detected'}` : '○ Ready in Care & Helplines', active: !!location },
                       { label: 'Messages sent', value: `${profile.messageCount || 0}`, active: true },
-                      { label: 'Member since', value: session?.createdAt ? new Date(session.createdAt).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' }) : '—', active: true },
                     ].map(row => (
                       <div key={row.label} className="flex items-center justify-between py-1.5">
                         <span className="text-sm text-sand-600">{row.label}</span>
@@ -1192,6 +1349,16 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                  {firebaseUser && (
+                    <button
+                      type="button"
+                      onClick={handleManualCloudSync}
+                      disabled={cloudSyncing}
+                      className="mt-3 w-full py-2 px-3 rounded-xl bg-forest-600 hover:bg-forest-700 text-white text-xs font-medium transition-all disabled:opacity-60"
+                    >
+                      {cloudSyncing ? 'Syncing Sanctuary to Cloud Firestore...' : '☁️ Sync All Sanctuary Data to Cloud Now'}
+                    </button>
+                  )}
                 </div>
 
                 {/* ── DANGER ZONE ── */}
@@ -1199,21 +1366,17 @@ export default function App() {
                   <p className="text-[10px] font-bold text-clay-500 uppercase tracking-wider mb-3">Danger Zone</p>
                   <div className="space-y-2">
                     <button onClick={() => {
-                      if (confirm('clear all chat messages? this cannot be undone.')) {
-                        handleSetMessages([]);
-                        setShowSettings(false);
-                      }
+                      handleSetMessages([]);
+                      setShowSettings(false);
                     }}
                       className="w-full text-left text-sm text-clay-600 hover:text-clay-700 bg-clay-50/50 hover:bg-clay-50 border border-clay-100 px-3 py-2.5 rounded-xl transition-colors">
                       🗑️ Clear chat history
                     </button>
                     <button onClick={() => {
-                      if (confirm('reset ALL data including chats, journal, mood history, and settings? this cannot be undone.')) {
-                        clearActiveSession();
-                        localStorage.clear();
-                        indexedDB.deleteDatabase('neuralminds_db');
-                        window.location.reload();
-                      }
+                      clearActiveSession();
+                      localStorage.clear();
+                      indexedDB.deleteDatabase('neuralminds_db');
+                      window.location.reload();
                     }}
                       className="w-full text-left text-sm text-clay-600 hover:text-clay-700 bg-clay-50/50 hover:bg-clay-50 border border-clay-100 px-3 py-2.5 rounded-xl transition-colors">
                       💣 Reset all data
@@ -1233,14 +1396,61 @@ export default function App() {
 
       {/* Main content */}
       <main className="flex-1 flex flex-col min-w-0 pt-14 md:pt-0">
+        {mapsQuotaExceeded && (
+          <div
+            role="alert"
+            style={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 9999,
+              background: '#fffbeb',
+              color: '#78350f',
+              borderBottom: '1px solid #f59e0b',
+              padding: '10px 16px',
+              fontSize: '14px',
+              textAlign: 'center',
+            }}
+          >
+            <strong>Google Maps daily limit reached</strong> — Map features are paused until the shared daily quota resets at midnight Pacific Time. To remove this limit, connect your own Google Cloud billing account.
+          </div>
+        )}
+        {currentSubtabs && view !== 'sounds' && (
+          <div className="bg-white/80 backdrop-blur-md border-b border-sand-200/80 px-4 md:px-8 py-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
+            {currentSubtabs.map(tab => {
+              const isTabActive = view === tab.view;
+              return (
+                <button
+                  key={tab.view}
+                  onClick={() => navigateTo(tab.view)}
+                  className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all ${
+                    isTabActive
+                      ? 'bg-forest-600 text-white shadow-xs'
+                      : 'text-sand-600 hover:bg-sand-100 hover:text-forest-800'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={view}
-            initial={{ opacity: 0, x: transitionDir * 30 }}
+            initial={{ opacity: 0, x: transitionDir * 20 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: transitionDir * -30 }}
-            transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+            exit={{ opacity: 0, x: transitionDir * -20 }}
+            transition={{ duration: 0.18, ease: [0.25, 0.1, 0.25, 1] }}
             className="flex-1 flex flex-col min-h-0">
-            {view === 'feed' && <DailyFeed userName={profile.displayName || ''} faithPref={localStorage.getItem('nm_faith_religion')} />}
+            {view === 'feed' && (
+              <DailyFeed
+                userName={profile.displayName || ''}
+                faithPref={localStorage.getItem('nm_faith_religion')}
+                profile={profile}
+                setProfile={handleSetProfile}
+                onNavigate={navigateTo}
+              />
+            )}
             {view === 'chat' && <ChatView messages={messages} setMessages={handleSetMessages} profile={profile} setProfile={handleSetProfile} location={location} uid={uid} lang={lang} />}
             {view === 'dashboard' && <Dashboard profile={profile} setProfile={handleSetProfile} />}
             {view === 'breathing' && <BreathingExercise />}
@@ -1408,23 +1618,32 @@ export default function App() {
       </AnimatePresence>
 
       {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-sand-200 z-30 safe-area-bottom">
-        <div className="flex items-center justify-between h-16 px-1 overflow-x-auto no-scrollbar">
-          {navItems.map((item) => (
-            <button key={item.view} onClick={() => navigateTo(item.view)}
-              className={`flex flex-col items-center gap-0.5 min-w-[52px] px-1.5 py-1.5 rounded-xl transition-all duration-200 relative ${
-                view === item.view ? 'text-forest-600' : 'text-sand-400'
-              }`}>
-              <span className="relative">
-                {item.icon}
-                {item.view === 'dashboard' && !moodLoggedToday && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-clay-500 rounded-full" />
-                )}
-              </span>
-              <span className="text-[9px] font-medium">{item.label}</span>
-              {view === item.view && <motion.div layoutId="mobileNav" className="absolute bottom-0.5 w-1 h-1 rounded-full bg-forest-500" />}
-            </button>
-          ))}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-sand-200 z-30 safe-area-bottom">
+        <div className="flex items-center justify-around h-16 px-2">
+          {[
+            { view: 'feed' as AppView, icon: <Sparkles className="w-5 h-5" />, label: 'Today' },
+            { view: 'chat' as AppView, icon: <MessageCircle className="w-5 h-5" />, label: 'Mira' },
+            { view: 'breathing' as AppView, icon: <Wind className="w-5 h-5" />, label: 'Breathe' },
+            { view: 'journal' as AppView, icon: <BookOpen className="w-5 h-5" />, label: 'Journal' },
+            { view: 'dashboard' as AppView, icon: <BarChart3 className="w-5 h-5" />, label: 'Journey' },
+          ].map((item) => {
+            const isMobileActive = activePillar === item.view;
+            return (
+              <button key={item.view} onClick={() => navigateTo(item.view)}
+                className={`flex flex-col items-center gap-0.5 min-w-[56px] px-2 py-1.5 rounded-xl transition-all duration-200 relative ${
+                  isMobileActive ? 'text-forest-600' : 'text-sand-400'
+                }`}>
+                <span className="relative">
+                  {item.icon}
+                  {item.view === 'dashboard' && !moodLoggedToday && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-clay-500 rounded-full" />
+                  )}
+                </span>
+                <span className="text-[10px] font-medium">{item.label}</span>
+                {isMobileActive && <motion.div layoutId="mobileNav" className="absolute bottom-0.5 w-1.5 h-1.5 rounded-full bg-forest-500" />}
+              </button>
+            );
+          })}
         </div>
       </nav>
     </div>

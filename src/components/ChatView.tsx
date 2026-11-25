@@ -1,12 +1,20 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
-import { ChatMessage, UserProfile, LocationData } from '../utils/types';
+import { Send, Loader2, Mic, MicOff, Volume2, VolumeX, Brain, Pin, Trash2, Plus, X, Cloud } from 'lucide-react';
+import { ChatMessage, UserProfile, LocationData, MiraFactCategory } from '../utils/types';
 import { sanitizeHTML, validateMessage } from '../utils/sanitize';
 import { detectEmotion, classifyRisk, getEmotionEmoji, inferAge, inferGender } from '../utils/emotions';
 import { detectCrisis, isDistressedEmotion, getCrisisInlineText, shouldShowPostCrisisCheckin, markPostCrisisCheckinSent } from '../utils/crisis';
 import { sendToGroq } from '../services/groq';
-import { extractAndStoreFacts } from '../utils/engagement';
+import {
+  extractAndStoreFacts,
+  loadMiraMemory,
+  saveMiraMemory,
+  addManualMiraFact,
+  removeMiraFact,
+  togglePinMiraFact,
+  MiraFact,
+} from '../utils/engagement';
 import { logCrisisEvent } from '../services/firebase';
 import CrisisModal from './CrisisModal';
 import PHQ9Modal from './PHQ9Modal';
@@ -47,6 +55,32 @@ export default function ChatView({ messages, setMessages, profile, setProfile, l
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [ventMode, setVentMode] = useState(() => localStorage.getItem('nm_vent_mode') === 'true');
   const ventMsgCountRef = useRef(0);
+  const [showMemoryVault, setShowMemoryVault] = useState(false);
+  const [memoryFacts, setMemoryFacts] = useState<MiraFact[]>(() => {
+    const local = loadMiraMemory();
+    if (local.length === 0 && Array.isArray(profile.miraMemory) && profile.miraMemory.length > 0) {
+      return saveMiraMemory(profile.miraMemory);
+    }
+    return local;
+  });
+  const [newFactText, setNewFactText] = useState('');
+  const [newFactCategory, setNewFactCategory] = useState<MiraFactCategory>('goal');
+
+  // Sync incoming profile.miraMemory from Cloud Firestore if richer than local
+  useEffect(() => {
+    if (Array.isArray(profile.miraMemory) && profile.miraMemory.length > memoryFacts.length) {
+      const merged = saveMiraMemory([...memoryFacts, ...profile.miraMemory]);
+      setMemoryFacts(merged);
+    }
+  }, [profile.miraMemory]);
+
+  const syncMemoryToProfile = useCallback((facts: MiraFact[]) => {
+    setMemoryFacts(facts);
+    setProfile({
+      ...profileRef.current,
+      miraMemory: facts,
+    });
+  }, [setProfile]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -400,8 +434,18 @@ export default function ChatView({ messages, setMessages, profile, setProfile, l
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
 
-      // Extract facts for Mira's deep memory (non-blocking)
-      extractAndStoreFacts(finalMessages).catch(() => {});
+      // Extract facts for Mira's deep memory & sync to Cloud profile
+      extractAndStoreFacts(finalMessages)
+        .then((updatedFacts) => {
+          if (mountedRef.current) {
+            setMemoryFacts(updatedFacts);
+            setProfile({
+              ...updatedProfile,
+              miraMemory: updatedFacts,
+            });
+          }
+        })
+        .catch(() => {});
     } catch {
       const fallback = "sorry, something glitched on my end. try sending that again?";
       await simulateTyping(fallback);
@@ -491,28 +535,235 @@ export default function ChatView({ messages, setMessages, profile, setProfile, l
         )}
       </AnimatePresence>
 
-      {/* Vent Mode toggle */}
-      <div className={`px-4 md:px-8 pt-2 pb-1 flex items-center justify-between ${ventMode ? 'bg-dusk-50 border-b border-dusk-200' : ''}`}>
-        <button onClick={() => {
-          const next = !ventMode;
-          setVentMode(next);
-          localStorage.setItem('nm_vent_mode', String(next));
-          if (next) ventMsgCountRef.current = 0;
-        }}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-all ${
-            ventMode
-              ? 'bg-dusk-600 text-white shadow-md shadow-dusk-600/30'
-              : 'bg-sand-100 text-sand-600 hover:bg-sand-200'
-          }`}>
-          💭 Vent Mode
-        </button>
-        {ventMode && (
-          <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-            className="text-[11px] text-dusk-500 italic">
-            mira is just listening — no advice 🤫
-          </motion.p>
-        )}
+      {/* Top toolbar: Vent Mode toggle + Mira's Deep Memory Vault button */}
+      <div className={`px-4 md:px-8 pt-2.5 pb-1.5 flex items-center justify-between gap-2 border-b ${ventMode ? 'bg-dusk-50 border-dusk-200' : 'bg-white/60 border-sand-100'}`}>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !ventMode;
+              setVentMode(next);
+              localStorage.setItem('nm_vent_mode', String(next));
+              if (next) ventMsgCountRef.current = 0;
+            }}
+            className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-all ${
+              ventMode
+                ? 'bg-dusk-600 text-white shadow-md shadow-dusk-600/30'
+                : 'bg-sand-100 text-sand-600 hover:bg-sand-200'
+            }`}
+          >
+            💭 Vent Mode
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowMemoryVault(true)}
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-forest-50 text-forest-700 hover:bg-forest-100 border border-forest-200/80 transition-all"
+            title="Inspect or edit everything Mira remembers about you"
+          >
+            <Brain className="w-3.5 h-3.5 text-forest-600" />
+            <span>Memory Vault ({memoryFacts.length}/100)</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {ventMode ? (
+            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-[11px] text-dusk-500 italic">
+              mira is just listening — no advice 🤫
+            </motion.p>
+          ) : (
+            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-sand-400">
+              <Cloud className="w-3 h-3 text-forest-500" />
+              {uid ? 'Cloud Memory Active' : 'Deep Memory Active'}
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* Mira's Deep Memory Vault Drawer */}
+      <AnimatePresence>
+        {showMemoryVault && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] bg-forest-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowMemoryVault(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 12 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl border border-sand-200 max-w-lg w-full max-h-[82vh] flex flex-col overflow-hidden"
+            >
+              <div className="px-5 py-4 border-b border-sand-100 flex items-center justify-between bg-gradient-to-r from-forest-50/70 to-warm-50/50">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-forest-600 text-white flex items-center justify-center shadow-sm">
+                    <Brain className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-serif text-lg text-forest-900 leading-tight">Mira&apos;s Deep Memory Vault</h3>
+                    <p className="text-xs text-sand-500">
+                      {memoryFacts.length}/100 long-term personal facts • Synced with Cloud Storage
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMemoryVault(false)}
+                  className="w-8 h-8 rounded-full bg-white hover:bg-sand-100 flex items-center justify-center border border-sand-200"
+                >
+                  <X className="w-4 h-4 text-sand-600" />
+                </button>
+              </div>
+
+              {/* Add new personal fact */}
+              <div className="p-4 border-b border-sand-100 bg-sand-50/50 space-y-2.5">
+                <p className="text-xs font-medium text-forest-800">
+                  Teach Mira something important about your life, goals, people, or triggers:
+                </p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    value={newFactCategory}
+                    onChange={e => setNewFactCategory(e.target.value as MiraFactCategory)}
+                    className="px-3 py-2 rounded-xl border border-sand-200 bg-white text-xs text-forest-800 font-medium"
+                  >
+                    <option value="goal">🎯 Goal</option>
+                    <option value="problem">🌧️ Stressor / Problem</option>
+                    <option value="person">👥 Important Person</option>
+                    <option value="trigger">⚡ Trigger</option>
+                    <option value="win">🏆 Recent Win</option>
+                    <option value="event">📅 Upcoming Event</option>
+                    <option value="preference">🌿 Preference / Identity</option>
+                  </select>
+                  <div className="flex-1 flex gap-2">
+                    <input
+                      type="text"
+                      value={newFactText}
+                      onChange={e => setNewFactText(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newFactText.trim()) {
+                          const updated = addManualMiraFact(newFactCategory, newFactText, true);
+                          syncMemoryToProfile(updated);
+                          setNewFactText('');
+                        }
+                      }}
+                      placeholder="e.g., Preparing for software engineering interviews in May"
+                      className="flex-1 px-3 py-2 rounded-xl border border-sand-200 bg-white text-xs text-forest-900 placeholder:text-sand-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newFactText.trim()) return;
+                        const updated = addManualMiraFact(newFactCategory, newFactText, true);
+                        syncMemoryToProfile(updated);
+                        setNewFactText('');
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-forest-600 hover:bg-forest-700 text-white text-xs font-medium flex items-center gap-1 flex-shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Memory list */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                {memoryFacts.length === 0 ? (
+                  <div className="text-center py-8 px-4">
+                    <Brain className="w-8 h-8 text-sand-300 mx-auto mb-2" />
+                    <p className="text-sm text-forest-800 font-medium">Your Memory Vault is ready</p>
+                    <p className="text-xs text-sand-500 mt-1 max-w-xs mx-auto">
+                      As you chat with Mira, she automatically remembers key details about your goals, stressors, people, and wins — or you can pin facts above.
+                    </p>
+                  </div>
+                ) : (
+                  memoryFacts.map((fact, idx) => {
+                    const key = fact.id || `${fact.text}_${idx}`;
+                    const badgeLabels: Record<string, string> = {
+                      problem: '🌧️ Stressor',
+                      person: '👥 Person',
+                      goal: '🎯 Goal',
+                      event: '📅 Event',
+                      mood: '💭 Mood',
+                      trigger: '⚡ Trigger',
+                      win: '🏆 Win',
+                      preference: '🌿 Preference',
+                      detail: '📌 Note',
+                    };
+                    return (
+                      <div
+                        key={key}
+                        className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition-all ${
+                          fact.pinned
+                            ? 'bg-forest-50/70 border-forest-200'
+                            : 'bg-white border-sand-200 hover:border-sand-300'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md bg-sand-100 text-forest-800">
+                              {badgeLabels[fact.type] || '📌 Fact'}
+                            </span>
+                            <span className="text-[10px] text-sand-400">{fact.date}</span>
+                            {fact.pinned && (
+                              <span className="text-[10px] text-forest-600 font-medium">★ Pinned</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-forest-900 font-medium break-words">{fact.text}</p>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = togglePinMiraFact(fact.id || fact.text);
+                              syncMemoryToProfile(updated);
+                            }}
+                            className={`p-1.5 rounded-lg transition-colors ${
+                              fact.pinned ? 'text-forest-600 bg-forest-100' : 'text-sand-400 hover:bg-sand-100'
+                            }`}
+                            title={fact.pinned ? 'Unpin memory' : 'Pin memory'}
+                          >
+                            <Pin className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = removeMiraFact(fact.id || fact.text);
+                              syncMemoryToProfile(updated);
+                            }}
+                            className="p-1.5 rounded-lg text-sand-400 hover:text-clay-600 hover:bg-clay-50 transition-colors"
+                            title="Remove memory"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="px-5 py-3 border-t border-sand-100 bg-sand-50/70 flex items-center justify-between text-[11px] text-sand-500">
+                <span>Mira uses these facts to personalize every conversation</span>
+                {memoryFacts.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      saveMiraMemory([]);
+                      syncMemoryToProfile([]);
+                    }}
+                    className="text-clay-600 hover:underline font-medium"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Daily mood check-in — only show after user has sent at least one message */}
       {!moodLogged && messages.some(m => m.role === 'user') && (
@@ -633,8 +884,29 @@ export default function ChatView({ messages, setMessages, profile, setProfile, l
       </div>
 
       {/* Input */}
-      <div className="border-t border-sand-200 bg-white/80 backdrop-blur-xl px-4 md:px-8 py-4 pb-20 md:pb-4">
+      <div className="border-t border-sand-200 bg-white/90 backdrop-blur-xl px-4 md:px-8 py-4 pb-20 md:pb-4">
         <div className="max-w-3xl mx-auto">
+          {/* Quick Conversation Starters when starting a chat */}
+          {messages.length <= 2 && !sending && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {[
+                "I've been feeling overwhelmed with work lately",
+                "Explain the neuroscience of how 4-7-8 breathing calms the amygdala",
+                "What do you remember about me in my Memory Vault?",
+                "Help me reframe an anxious thought or plan a focused study block",
+              ].map((promptText) => (
+                <button
+                  key={promptText}
+                  type="button"
+                  onClick={() => setInput(promptText)}
+                  className="text-xs bg-sand-50 hover:bg-forest-50 text-forest-800 border border-sand-200 hover:border-forest-300 px-3 py-1.5 rounded-xl transition-all"
+                >
+                  {promptText}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Listening indicator */}
           <AnimatePresence>
             {isListening && (

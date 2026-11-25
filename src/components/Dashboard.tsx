@@ -447,8 +447,8 @@ function WellnessReport({ profile }: { profile: UserProfile }) {
             <table className="report-table">
               <thead><tr><th>Date</th><th>Mood</th><th>Feeling</th></tr></thead>
               <tbody>
-                {weekMoods.map(m => (
-                  <tr key={m.date}>
+                {weekMoods.map((m, idx) => (
+                  <tr key={`${m.date}-${idx}`}>
                     <td>{new Date(m.date + 'T00:00:00').toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' })}</td>
                     <td>{moodEmoji(m.mood)} {m.mood}/5</td>
                     <td>{m.emotion}</td>

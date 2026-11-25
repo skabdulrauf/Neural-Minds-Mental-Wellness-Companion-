@@ -1,0 +1,193 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User wellness profile, mood logs, journal entries, PHQ-9 scores, streak, and Mira deep memory facts.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user.",
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address of the user.",
+          "maxLength": 254
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Avatar photo URL.",
+          "maxLength": 1024
+        },
+        "messageCount": {
+          "type": "number",
+          "description": "Total chat messages sent."
+        },
+        "distressedCount": {
+          "type": "number",
+          "description": "Count of distressed messages."
+        },
+        "streak": {
+          "type": "number",
+          "description": "Active daily streak count."
+        },
+        "lastActiveDate": {
+          "type": "string",
+          "description": "ISO YYYY-MM-DD date string of last activity.",
+          "maxLength": 32
+        },
+        "moodHistory": {
+          "type": "array",
+          "description": "Bounded array of mood log objects (max 365)."
+        },
+        "phq9Scores": {
+          "type": "array",
+          "description": "Bounded array of numeric PHQ-9 scores (max 100)."
+        },
+        "journalEntries": {
+          "type": "array",
+          "description": "Bounded array of user journal entry objects (max 200)."
+        },
+        "concerns": {
+          "type": "array",
+          "description": "Bounded array of user concern strings (max 50)."
+        },
+        "miraMemory": {
+          "type": "array",
+          "description": "Bounded array of Mira deep memory facts (max 100)."
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "updatedAt"
+      ]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "Synchronized chat history between the user and Mira AI.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "messages": {
+          "type": "array",
+          "description": "Bounded list of chat messages (max 200)."
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds."
+        }
+      },
+      "required": [
+        "uid",
+        "messages",
+        "updatedAt"
+      ]
+    },
+    "SanctuaryState": {
+      "title": "SanctuaryState",
+      "description": "Cloud-persisted state for Gratitude Garden, Future Letters, 7-Day Programs, First Aid Kit, and Sound Presets.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "gardenEntries": {
+          "type": "array",
+          "description": "Gratitude garden blooms (max 200)."
+        },
+        "futureLetters": {
+          "type": "array",
+          "description": "Future self letters (max 100)."
+        },
+        "firstAidItems": {
+          "type": "array",
+          "description": "Personal emergency coping kit items (max 100)."
+        },
+        "activeProgramJson": {
+          "type": "string",
+          "description": "Serialized active 7-day program progress.",
+          "maxLength": 20000
+        },
+        "soundVolumesJson": {
+          "type": "string",
+          "description": "Serialized sound mixer volume presets.",
+          "maxLength": 5000
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds."
+        }
+      },
+      "required": [
+        "uid",
+        "updatedAt"
+      ]
+    },
+    "CrisisLog": {
+      "title": "CrisisLog",
+      "description": "Audit record when high-risk crisis support resources are triggered.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds."
+        },
+        "messageSnippet": {
+          "type": "string",
+          "description": "Truncated snippet of crisis context.",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "uid",
+        "timestamp",
+        "messageSnippet"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Stores private user profile, mood history, journal entries, and Mira memory bank."
+    },
+    "/chats/{userId}": {
+      "schema": "ChatThread",
+      "description": "Stores private conversation thread with Mira AI."
+    },
+    "/sanctuary_state/{userId}": {
+      "schema": "SanctuaryState",
+      "description": "Stores private cloud state for Gratitude Garden, Future Letters, 7-Day Programs, First Aid Kit, and Sound Presets."
+    },
+    "/crisis_logs/{logId}": {
+      "schema": "CrisisLog",
+      "description": "Stores owner-scoped crisis safety check-in logs."
+    }
+  }
+}

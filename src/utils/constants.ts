@@ -4,8 +4,13 @@
 
 export const APP_NAME = 'NeuralMinds';
 
-export const GROQ_API_KEY =
-  (import.meta.env.VITE_GROQ_API_KEY as string) || '';
+const rawKey = (import.meta?.env?.VITE_GROQ_API_KEY as string) || '';
+export const GROQ_API_KEY = rawKey.trim().startsWith('gsk_') ? rawKey.trim() : '';
+
+export function hasValidGroqKey(key?: string | null): boolean {
+  const k = (key ?? GROQ_API_KEY).trim();
+  return k.length > 20 && k.startsWith('gsk_');
+}
 
 export const GROQ_MODELS = [
   'qwen/qwen3.8-27b',

@@ -4,6 +4,7 @@ import { BookOpen, Sparkles, Save, ChevronLeft, ChevronRight, Loader2 } from 'lu
 import { UserProfile } from '../utils/types';
 
 import { GROQ_API_KEY } from '../utils/constants';
+import { getCuratedJournalReflection } from '../utils/miraEngine';
 const API_KEY = GROQ_API_KEY;
 
 interface JournalProps {
@@ -28,6 +29,7 @@ function entryKey(date: string, prompt: string): string {
 }
 
 async function callAI(prompt: string): Promise<string> {
+  if (!API_KEY) return '';
   const models = ['qwen/qwen3.8-27b', 'allam-2-7b', 'openai/gpt-oss-20b'];
   for (const model of models) {
     try {
@@ -45,6 +47,12 @@ async function callAI(prompt: string): Promise<string> {
   }
   return '';
 }
+
+const DEFAULT_PROMPTS = [
+  "What has been quietly taking up the most room in your mind today?",
+  "What is one boundary or permission you need to give yourself this week?",
+  "Describe a small moment recently where you felt even a little bit at peace.",
+];
 
 const MOOD_TAGS = [
   { value: 1, emoji: '😢', label: 'Heavy' },
@@ -73,8 +81,8 @@ export default function Journal({ profile, setProfile }: JournalProps) {
 }
 
 function JournalMain({ profile, setProfile, onSwitchToUnsent }: JournalProps & { onSwitchToUnsent: () => void }) {
-  const [prompts, setPrompts] = useState<string[]>([]);
-  const [promptsLoading, setPromptsLoading] = useState(true);
+  const [prompts, setPrompts] = useState<string[]>(DEFAULT_PROMPTS);
+  const [promptsLoading, setPromptsLoading] = useState(false);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [entry, setEntry] = useState('');
   const [saved, setSaved] = useState(false);
@@ -97,30 +105,38 @@ function JournalMain({ profile, setProfile, onSwitchToUnsent }: JournalProps & {
     const cached = localStorage.getItem(`nm_journal_prompts_${today}`);
     if (cached) {
       try {
-        setPrompts(JSON.parse(cached));
-        setPromptsLoading(false);
-        return;
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setPrompts(parsed);
+          return;
+        }
       } catch {}
+    }
+
+    if (!API_KEY) {
+      localStorage.setItem(`nm_journal_prompts_${today}`, JSON.stringify(DEFAULT_PROMPTS));
+      return;
     }
 
     const dayName = new Date().toLocaleDateString('en', { weekday: 'long' });
     const fullDate = new Date().toLocaleDateString('en', { weekday: 'long', month: 'long', day: 'numeric' });
 
+    setPromptsLoading(true);
     (async () => {
       const result = await callAI(
         `Give 3 different journal prompts for today (${fullDate}, ${dayName}). Make them varied: one about today's emotions, one about relationships, one about goals or future. Each prompt should be one sentence. Number them 1, 2, 3. No explanations. No preamble.`
       );
-      if (result && mountedRef.current) {
-        const lines = result.split('\n').map(l => l.replace(/^\d+[\.\)]\s*/, '').trim()).filter(l => l.length > 10);
-        const final = lines.slice(0, 3);
-        if (final.length > 0) {
-          setPrompts(final);
-          localStorage.setItem(`nm_journal_prompts_${today}`, JSON.stringify(final));
-        } else {
-          setPrompts(["What's on your mind right now?", "Who's been on your mind lately and why?", "What's one thing you want to be different next month?"]);
+      if (mountedRef.current) {
+        if (result) {
+          const lines = result.split('\n').map(l => l.replace(/^\d+[\.\)]\s*/, '').trim()).filter(l => l.length > 10);
+          const final = lines.slice(0, 3);
+          if (final.length > 0) {
+            setPrompts(final);
+            localStorage.setItem(`nm_journal_prompts_${today}`, JSON.stringify(final));
+          }
         }
+        setPromptsLoading(false);
       }
-      if (mountedRef.current) setPromptsLoading(false);
     })();
   }, []);
 
@@ -157,17 +173,18 @@ function JournalMain({ profile, setProfile, onSwitchToUnsent }: JournalProps & {
 
     // Get Mira's response
     setMiraLoading(true);
-    const response = await callAI(
+    const aiResp = await callAI(
       `You are Mira, the user's close friend. They just wrote this journal entry:\n\n"${entry.trim()}"\n\nWrite a genuine, thoughtful response as if you just read their diary and they asked what you think. Be real. Notice specific things they said. Ask one question that makes them think deeper. Do not be generic. Do not use therapy language like "valid" or "I hear you". Lowercase. 3-4 sentences max.`
     );
+    const response = aiResp || getCuratedJournalReflection(entry.trim());
     if (mountedRef.current) {
-      setMiraResponse(response || "i read every word. wanna talk about it?");
+      setMiraResponse(response);
       setMiraLoading(false);
       setShowMoodTag(true);
 
       // Save Mira's response
       const key = entryKey(today, prompt);
-      const updatedExtras = { ...extras, [key]: { miraResponse: response || '', moodTag: undefined } };
+      const updatedExtras = { ...extras, [key]: { miraResponse: response, moodTag: undefined } };
       setExtras(updatedExtras);
       saveExtras(updatedExtras);
     }

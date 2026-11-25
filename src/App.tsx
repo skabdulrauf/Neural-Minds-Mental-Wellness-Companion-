@@ -1414,7 +1414,7 @@ export default function App() {
             <strong>Google Maps daily limit reached</strong> — Map features are paused until the shared daily quota resets at midnight Pacific Time. To remove this limit, connect your own Google Cloud billing account.
           </div>
         )}
-        {currentSubtabs && view !== 'sounds' && (
+        {currentSubtabs && (
           <div className="bg-white/80 backdrop-blur-md border-b border-sand-200/80 px-4 md:px-8 py-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
             {currentSubtabs.map(tab => {
               const isTabActive = view === tab.view;
